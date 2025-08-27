@@ -145,7 +145,15 @@ const Dashboard = () => {
             onError={() => setLogoVisible(false)} // si falla, ocultamos el logo y dejamos solo el título
           />
         ) : null}
-          {/* Título eliminado */}
+         <motion.h2
+  initial={{ opacity: 0, y: -20 }}
+  animate={{ opacity: 1, y: 0 }}
+  transition={{ duration: 0.5 }}
+  className="text-4xl font-extrabold text-gray-900 mb-2 text-center bg-clip-text text-transparent bg-gradient-to-r from-emerald-600 to-teal-700"
+>
+  DelSabor
+</motion.h2>
+
       </div>
 
       {error && (
