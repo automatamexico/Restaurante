@@ -91,11 +91,11 @@ const Login = () => {
        <div className="text-center mb-8">
   <img
     src="https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png"
-    alt="DelSabor"
-    className="mx-auto mb-4 h-16 w-16 object-contain"
+    alt="LOGIN"
+    className="block mx-auto mb-4 h-48 w-48 object-contain"
     loading="lazy"
   />
-  <h2 className="text-4xl font-extrabold text-gray-900 mb-2">DelSabor</h2>
+  <h2 className="text-4xl font-extrabold text-gray-900 mb-2">LOGIN</h2>
   <p className="text-gray-500">Desarrollado y administrado por Soluciones Inteligentes DELSU.</p>
 </div>
         {error && (
