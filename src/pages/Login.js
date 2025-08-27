@@ -90,7 +90,7 @@ const Login = () => {
       >
         <div className="text-center mb-8">
           <Utensils className="w-16 h-16 text-indigo-600 mx-auto mb-4" />
-          <h2 className="text-4xl font-extrabold text-gray-900 mb-2">SoftRestaurant</h2>
+          <h2 className="text-4xl font-extrabold text-gray-900 mb-2">Ah Padrino</h2>
           <p className="text-gray-500">Inicia sesión para gestionar tu imperio culinario.</p>
         </div>
 
