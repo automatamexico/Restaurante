@@ -145,14 +145,7 @@ const Dashboard = () => {
             onError={() => setLogoVisible(false)} // si falla, ocultamos el logo y dejamos solo el título
           />
         ) : null}
-        <motion.h2
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="text-4xl font-extrabold text-gray-900 mb-2 text-center bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-700"
-        >
-         
-        </motion.h2>
+          {/* Título eliminado */}
       </div>
 
       {error && (
