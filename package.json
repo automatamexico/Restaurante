@@ -17,7 +17,7 @@
         "react-router-dom": "^6",
 "framer-motion": "^10",
 "lucide-react": "^0.430.0",
-"@supabase/supabase-js": "^2"
+"@supabase/supabase-js": "^2",
       }
       "main": "/index.js",
       "devDependencies": {},
