@@ -14,7 +14,11 @@
         "autoprefixer": "^10.0.0",
         "tailwind-merge": "^2.4.0",
         "tailwindcss-animate": "^1.0.7"
-      },
+        "react-router-dom": "^6",
+"framer-motion": "^10",
+"lucide-react": "^0.430.0",
+"@supabase/supabase-js": "^2"
+      }
       "main": "/index.js",
       "devDependencies": {},
       "browserslist": {
