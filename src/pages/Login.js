@@ -88,12 +88,16 @@ const Login = () => {
         transition={{ duration: 0.6, type: "spring", damping: 15, stiffness: 100 }}
         className="bg-white rounded-3xl shadow-2xl p-8 md:p-12 w-full max-w-md border border-gray-200"
       >
-        <div className="text-center mb-8">
-          <Utensils className="w-16 h-16 text-indigo-600 mx-auto mb-4" />
-          <h2 className="text-4xl font-extrabold text-gray-900 mb-2">Ah Padrino</h2>
-          <p className="text-gray-500">Inicia sesión para gestionar tu imperio culinario.</p>
-        </div>
-
+       <div className="text-center mb-8">
+  <img
+    src="https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png"
+    alt="DelSabor"
+    className="mx-auto mb-4 h-16 w-16 object-contain"
+    loading="lazy"
+  />
+  <h2 className="text-4xl font-extrabold text-gray-900 mb-2">DelSabor</h2>
+  <p className="text-gray-500">Desarrollado y administrado por Soluciones Inteligentes DELSU.</p>
+</div>
         {error && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
