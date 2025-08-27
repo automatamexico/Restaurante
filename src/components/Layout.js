@@ -77,7 +77,7 @@ const Layout = ({ children }) => {
         >
           <div className="flex items-center mb-10">
             <Utensils className="w-10 h-10 text-purple-300 mr-3" />
-            <h1 className="text-3xl font-bold tracking-wide text-purple-100">SoftRestaurant</h1>
+            <h1 className="text-3xl font-bold tracking-wide text-purple-100">DelSabor</h1>
           </div>
           <nav>
             <ul className="space-y-3">
