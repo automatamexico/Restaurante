@@ -9,9 +9,9 @@ import LoadingSpinner from '../components/LoadingSpinner';
 // CONFIGURACIÓN DEL LOGO
 // =====================
 // ⬇️ Pega aquí tu URL PÚBLICA de Supabase para el logo (PNG/JPG/SVG):
-const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_juan_ok.png';
+const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png';
 // Tamaño máximo del logo (px). Se escala automáticamente.
-const LOGO_MAX_WIDTH_PX = 180;
+const LOGO_MAX_WIDTH_PX = 360;
 
 const Dashboard = () => {
   const [stats, setStats] = useState({
@@ -151,7 +151,7 @@ const Dashboard = () => {
           transition={{ duration: 0.5 }}
           className="text-4xl font-extrabold text-gray-900 mb-2 text-center bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-700"
         >
-          DELSU RESTAURANT
+         
         </motion.h2>
       </div>
 
