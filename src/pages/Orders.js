@@ -1,5 +1,3 @@
-/* global qz */
-/* eslint-disable no-undef */
 // src/pages/Orders.js
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -13,109 +11,138 @@ import {
   Table,
   DollarSign,
   User,
+  Printer,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-/** ===== QZ TRAY (impresión silenciosa) ===== */
-const setupQZSecurity = () => {
-  if (!window.qz?.security) return;
-  qz.security.setCertificatePromise((resolve) => {
-    resolve(null); // DEV: sin certificado; en PROD devuelve tu cert PEM
-  });
-  qz.security.setSignaturePromise(() => {
-    return Promise.resolve(null); // DEV: sin firma; en PROD firma en backend
-  });
-};
-
-const ensureQZ = async () => {
-  if (!window.qz) throw new Error('QZ Tray no encontrado');
-  if (qz.websocket.isActive()) return;
-  setupQZSecurity();
-  await qz.websocket.connect();
-};
-
-const getPrinterName = async (preferred) => {
-  if (preferred) {
-    const list = await qz.printers.find();
-    const found = list.find((p) => p.toLowerCase().includes(preferred.toLowerCase()));
-    if (found) return found;
-  }
-  return await qz.printers.getDefault();
-};
-
-const esc = (hex) => ({ type: 'raw', format: 'hex', data: hex.replace(/\s+/g, '') });
-const txt = (str) => ({ type: 'raw', format: 'plain', data: str });
-
-const colLine = (left, right, width = 32) => {
-  const l = (left || '').toString();
-  const r = (right || '').toString();
-  const space = Math.max(1, width - l.length - r.length);
-  return l.slice(0, width) + ' '.repeat(space) + r.slice(0, width);
-};
-const wrapText = (text, width = 32) => {
-  const out = [];
-  let s = (text || '').toString();
-  while (s.length > width) {
-    out.push(s.slice(0, width));
-    s = s.slice(width);
-  }
-  out.push(s);
-  return out;
-};
-
-const printKitchenViaQZ = async (order, { printerHint = 'XP' } = {}) => {
-  await ensureQZ();
-  const printer = await getPrinterName(printerHint);
-  const cfg = qz.configs.create(printer, {
-    encoding: 'CP437',
-    rasterize: false,
-    colorType: 'blackwhite',
-    margins: 0,
-    copies: 1,
-    jobName: `Orden-${String(order.id).slice(0, 8)}`
-  });
+/* ===========================
+   Ticket HTML (58mm, ancho imprimible 48mm) 
+   =========================== */
+const printKitchenTicket = (order) => {
+  const LOGO_URL =
+    'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png';
 
   const createdAt = new Date(order.created_at);
-  const mesa = order.tables?.name || 'N/A';
-  const mesero = order.users?.username || 'N/A';
+  const tableName = order.tables?.name || 'N/A';
+  const waiter = order.users?.username || 'N/A';
+
   const items = order.order_items || [];
-  const total = items.reduce((sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0), 0);
+  const itemsHTML =
+    items.length > 0
+      ? items
+          .map(
+            (it) => `
+        <tr>
+          <td class="col-name">
+            ${it.menu_items?.name || 'Ítem'}
+            ${it.notes ? `<div class="notes">Notas: ${it.notes}</div>` : ''}
+          </td>
+          <td class="col-qty">${Number(it.quantity || 0)}</td>
+          <td class="col-price">$${Number(it.price || 0).toFixed(2)}</td>
+        </tr>
+      `
+          )
+          .join('')
+      : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-price"></td></tr>`;
 
-  const itemLines = [];
-  items.forEach((it) => {
-    const name = it.menu_items?.name || 'Ítem';
-    const qty = String(it.quantity || 0);
-    const price = '$' + Number(it.price || 0).toFixed(2);
-    const nameWrapped = wrapText(name, 22);
-    itemLines.push(colLine(nameWrapped[0], `${qty} x ${price}`, 32));
-    for (let i = 1; i < nameWrapped.length; i++) itemLines.push(nameWrapped[i]);
-    if (it.notes) wrapText('Notas: ' + it.notes, 32).forEach((l) => itemLines.push(l));
-  });
+  const total = items.reduce(
+    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
+    0
+  );
 
-  const data = [
-    esc('1B40'), esc('1B7400'),
-    esc('1B6101'), esc('1D2111'),
-    txt('ORDEN COCINA\n'),
-    esc('1D2100'),
-    txt(`#${String(order.id).slice(0, 8)}  ${createdAt.toLocaleString('es-MX')}\n\n`),
-    esc('1B6100'),
-    txt(`Mesa: ${mesa}\n`),
-    txt(`Mesero: ${mesero}\n`),
-    txt(`Estado: ${order.status}\n`),
-    txt('--------------------------------\n'),
-    txt(colLine('Producto', 'Cant x Precio') + '\n'),
-    txt('--------------------------------\n'),
-    ...itemLines.map((l) => txt(l + '\n')),
-    txt('--------------------------------\n'),
-    txt(colLine('TOTAL', '$' + total.toFixed(2)) + '\n\n'),
-    esc('1B6403'), esc('1D5601'),
-  ];
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Ticket Cocina #${String(order.id).slice(0, 8)}</title>
+  <style>
+    @page { size: 58mm auto; margin: 0; }
+    html, body { margin: 0; padding: 0; }
+    body { width: 48mm; }
+    .ticket {
+      width: 48mm;
+      box-sizing: border-box;
+      padding: 2mm;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+      color: #000;
+    }
+    .center { text-align: center; }
+    .title { font-weight: 800; font-size: 16px; margin: 2mm 0 1mm; }
+    .muted { color: #333; font-size: 11px; }
+    hr { border: 0; border-top: 1px dashed #000; margin: 2mm 0; }
+    .logo {
+      display: block;
+      margin: 0 auto 2mm;
+      width: 48mm;
+      max-width: 48mm;
+      image-rendering: -webkit-optimize-contrast;
+      image-rendering: crisp-edges;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+    .col-name  { width: 64%; padding: 1mm 0 0.5mm 0; }
+    .col-qty   { width: 18%; text-align: center; }
+    .col-price { width: 18%; text-align: right; }
+    td { vertical-align: top; }
+    .notes { font-size: 10px; color: #333; margin-top: 0.5mm; }
+    .col-name, .notes { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+    .totals { margin-top: 2mm; font-size: 13px; font-weight: 700; text-align: right; }
+    * { box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div class="ticket">
+    ${LOGO_URL ? `<img src="${LOGO_URL}" alt="Logo" class="logo" width="384" />` : ''}
+    <div class="center title">ORDEN COCINA</div>
+    <div class="center muted">#${String(order.id).slice(0, 8)} — ${createdAt.toLocaleString('es-MX')}</div>
+    <hr />
+    <div><strong>Mesa:</strong> ${tableName}</div>
+    <div><strong>Mesero:</strong> ${waiter}</div>
+    <div><strong>Estado:</strong> ${order.status}</div>
+    <hr />
+    <table>
+      <thead>
+        <tr>
+          <td class="col-name"><strong>Producto</strong></td>
+          <td class="col-qty"><strong>Cant</strong></td>
+          <td class="col-price"><strong>Precio</strong></td>
+        </tr>
+      </thead>
+      <tbody>
+        ${itemsHTML}
+      </tbody>
+    </table>
+    <div class="totals">Total: $${total.toFixed(2)}</div>
+  </div>
+  <script>
+    setTimeout(function(){ window.print(); }, 100);
+  </script>
+</body>
+</html>
+`;
 
-  await qz.print(cfg, data);
+  const w = window.open('', '_blank', 'width=480,height=640');
+  if (!w) {
+    alert('El bloqueador de popups impidió abrir la ventana de impresión. Permite popups para este sitio.');
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
 };
 
-/** ===== LÓGICA DE ÓRDENES ===== */
+/* ===========================
+   Helpers de datos
+   =========================== */
 const getOrCreateProfileId = async () => {
   let profileId = localStorage.getItem('user_id');
   if (profileId) return profileId;
@@ -169,16 +196,20 @@ const fetchOrderDetailsForPrint = async (orderId) => {
   return data;
 };
 
+/* ===========================
+   Componente principal
+   =========================== */
 const Orders = () => {
   const [orders, setOrders] = useState([]);
   const [tables, setTables] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(null);
 
-  // Nuevas órdenes arrancan en "preparing"
+  // NUEVAS órdenes arrancan en "preparing"
   const [formData, setFormData] = useState({
     table_id: '',
     user_id: '',
@@ -188,10 +219,17 @@ const Orders = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
 
-  useEffect(() => { fetchData(); }, []);
+  // Modal de confirmación de impresión
+  const [printPromptOpen, setPrintPromptOpen] = useState(false);
+  const [printOrder, setPrintOrder] = useState(null);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
 
   const fetchData = async () => {
     setLoading(true);
+
     const { data: ordersData } = await supabase
       .from('orders')
       .select(
@@ -255,6 +293,9 @@ const Orders = () => {
     }, 0);
   };
 
+  // Crear/editar orden:
+  // - En creación: status = 'preparing'
+  // - Tras crear: mostrar modal "Imprimir Orden en cocina"
   const handleAddEditOrder = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -328,13 +369,14 @@ const Orders = () => {
       return;
     }
 
-    // Imprime silencioso solo cuando es NUEVA orden
+    // Si es NUEVA orden, mostramos modal para imprimir
     if (!currentOrder) {
       try {
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
-        await printKitchenViaQZ(fullOrder, { printerHint: 'XP' });
+        setPrintOrder(fullOrder);
+        setPrintPromptOpen(true);
       } catch (printErr) {
-        console.warn('No se pudo imprimir el ticket (QZ):', printErr);
+        console.warn('No pude preparar el ticket:', printErr);
       }
     }
 
@@ -520,7 +562,7 @@ const Orders = () => {
                     onClick={() => handleDeleteOrder(order.id)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duración-200"
+                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200"
                     title="Eliminar Orden"
                   >
                     <Trash2 className="w-5 h-5" />
@@ -532,8 +574,9 @@ const Orders = () => {
         </AnimatePresence>
       </div>
 
+      {/* ===== Modal: Imprimir Orden en cocina ===== */}
       <AnimatePresence>
-        {isModalOpen && (
+        {printPromptOpen && (
           <motion.div
             className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
             initial={{ opacity: 0 }}
@@ -541,161 +584,47 @@ const Orders = () => {
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-lg relative"
-              initial={{ opacity: 0, y: 50 }}
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md relative"
+              initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 50 }}
+              exit={{ opacity: 0, y: 40 }}
               transition={{ type: 'spring', damping: 20, stiffness: 300 }}
             >
-              <button onClick={closeModal} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+              <button
+                onClick={() => setPrintPromptOpen(false)}
+                className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+              >
                 <XCircle className="w-6 h-6" />
               </button>
 
-              <h3 className="text-2xl font-bold text-gray-800 mb-6">
-                {currentOrder ? 'Editar Orden' : 'Crear Nueva Orden'}
-              </h3>
+              <div className="flex items-center gap-3 mb-4">
+                <Printer className="w-7 h-7 text-indigo-600" />
+                <h3 className="text-2xl font-bold text-gray-800">Imprimir Orden en cocina</h3>
+              </div>
 
-              <form onSubmit={handleAddEditOrder} className="space-y-5">
-                <div>
-                  <label htmlFor="table_id" className="block text-gray-700 text-sm font-medium mb-2">
-                    Mesa
-                  </label>
-                  <select
-                    id="table_id"
-                    name="table_id"
-                    value={formData.table_id}
-                    onChange={handleInputChange}
-                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    required
-                  >
-                    <option value="">Selecciona una mesa</option>
-                    {tables.map((table) => (
-                      <option key={table.id} value={table.id}>
-                        {table.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <p className="text-gray-600 mb-6">
+                ¿Deseas imprimir el ticket de la orden <strong>#{printOrder ? String(printOrder.id).slice(0, 8) : ''}</strong> para cocina?
+              </p>
 
-                <div>
-                  <label htmlFor="status" className="block text-gray-700 text-sm font-medium mb-2">
-                    Estado de la Orden
-                  </label>
-                  <select
-                    id="status"
-                    name="status"
-                    value={formData.status}
-                    onChange={handleInputChange}
-                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    disabled={!currentOrder}
-                    required
-                  >
-                    <option value="pending">Pendiente</option>
-                    <option value="preparing">Preparando</option>
-                    <option value="ready">Lista</option>
-                    <option value="served">Servida</option>
-                    <option value="paid">Pagada</option>
-                    <option value="cancelled">Cancelada</option>
-                  </select>
-                  {!currentOrder && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      Al crear, el estado se fija automáticamente en <strong>Preparando</strong>.
-                    </p>
-                  )}
-                </div>
-
-                <h4 className="text-lg font-bold text-gray-800 mt-6 mb-3">Items de la Orden</h4>
-                {formData.items.map((item, index) => (
-                  <div key={index} className="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg">
-                    <div className="flex-grow">
-                      <label htmlFor={`menu_item_id-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
-                        Plato
-                      </label>
-                      <select
-                        id={`menu_item_id-${index}`}
-                        name="menu_item_id"
-                        value={item.menu_item_id}
-                        onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
-                        required
-                      >
-                        <option value="">Selecciona un plato</option>
-                        {menuItems.map((menuItem) => (
-                          <option key={menuItem.id} value={menuItem.id}>
-                            {menuItem.name} (${Number(menuItem.price || 0).toFixed(2)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="w-20">
-                      <label htmlFor={`quantity-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
-                        Cant.
-                      </label>
-                      <input
-                        type="number"
-                        id={`quantity-${index}`}
-                        name="quantity"
-                        value={item.quantity}
-                        onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
-                        min="1"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex-grow">
-                      <label htmlFor={`notes-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
-                        Notas (Opcional)
-                      </label>
-                      <input
-                        type="text"
-                        id={`notes-${index}`}
-                        name="notes"
-                        value={item.notes}
-                        onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
-                        placeholder="Sin cebolla, extra picante..."
-                      />
-                    </div>
-
-                    <motion.button
-                      type="button"
-                      onClick={() => handleRemoveItem(index)}
-                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200 mt-auto"
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.9 }}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </motion.button>
-                  </div>
-                ))}
-
-                <motion.button
+              <div className="flex justify-end gap-3">
+                <button
                   type="button"
-                  onClick={handleAddItem}
-                  className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors duration-200 flex items-center justify-center space-x-2 mt-4"
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
+                  className="px-4 py-2 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-100"
+                  onClick={() => setPrintPromptOpen(false)}
                 >
-                  <PlusCircle className="w-5 h-5" />
-                  <span>Añadir Plato</span>
-                </motion.button>
-
-                <p className="text-xl font-bold text-gray-800 mt-6">
-                  Total de la Orden: ${calculateTotalAmount().toFixed(2)}
-                </p>
-
-                <motion.button
-                  type="submit"
-                  className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duración-200 flex items-center justify-center mt-6 disabled:opacity-60"
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  disabled={loading}
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+                  onClick={() => {
+                    if (printOrder) printKitchenTicket(printOrder);
+                    setPrintPromptOpen(false);
+                  }}
                 >
-                  {loading ? <LoadingSpinner /> : currentOrder ? 'Guardar Cambios' : 'Crear Orden'}
-                </motion.button>
-              </form>
+                  Aceptar e imprimir
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -705,3 +634,4 @@ const Orders = () => {
 };
 
 export default Orders;
+
