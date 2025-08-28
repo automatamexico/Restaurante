@@ -1,15 +1,18 @@
+// src/pages/Login.jsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { User, Lock, LogIn, Utensils, XCircle } from 'lucide-react';
+import { User, Lock, LogIn, XCircle } from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 
+const normalizeRole = (val) => (val || '').toString().trim().toLowerCase();
+
 const Login = () => {
-  const [email, setEmail] = useState(''); // login por email
+  const [email, setEmail] = useState('');   // login por email
   const [password, setPassword] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [loading,   setLoading] = useState(false);
+  const [error,     setError]   = useState(null);
   const navigate = useNavigate();
 
   const handleLogin = async (e) => {
@@ -20,61 +23,76 @@ const Login = () => {
     try {
       const normEmail = email.trim().toLowerCase();
 
-      // 1) Iniciar sesión con Supabase Auth
+      // 1) Iniciar sesión
       const { data, error: authError } = await supabase.auth.signInWithPassword({
         email: normEmail,
         password,
       });
       if (authError) {
-        // Imprimir el error completo en la consola para depuración
-        console.error("Error de autenticación de Supabase:", authError);
-
         const raw = (authError.message || '').toLowerCase();
         if (raw.includes('invalid') || raw.includes('credentials')) {
-          throw new Error('Correo o contraseña incorrectos. ¡Revisa tus credenciales, genio!');
+          throw new Error('Correo o contraseña incorrectos.');
         }
         if (raw.includes('email not confirmed')) {
-          throw new Error('Tu correo no está confirmado. Revisa tu bandeja de entrada. ¡No te saltes pasos!');
+          throw new Error('Tu correo no está confirmado. Revisa tu bandeja.');
         }
-        throw new Error(authError.message || 'No se pudo iniciar sesión. ¡Algo salió mal en el universo!');
+        throw new Error(authError.message || 'No se pudo iniciar sesión.');
       }
 
       const user = data?.user;
-      if (!user) throw new Error('No se obtuvo el usuario de la sesión. ¿Se esfumó?');
+      if (!user) throw new Error('No se obtuvo el usuario de la sesión.');
 
-      // 2) Confirmar que hay sesión activa
+      // 2) Confirmar sesión activa
       const { data: sessData, error: sessErr } = await supabase.auth.getSession();
-      if (sessErr || !sessData?.session) {
-        console.error("Error al obtener sesión después del login:", sessErr); // Log del error
-        throw new Error('No hay sesión activa tras el login. ¡El sistema te está troleando!');
-      }
+      if (sessErr || !sessData?.session) throw new Error('No hay sesión activa tras el login.');
 
-      // 3) Intentar leer el perfil en public.users (no bloquea si falla)
-      try {
-        const { data: profile } = await supabase
+      // 3) Asegurar perfil en public.users y leer rol
+      let profile = null;
+      const { data: found } = await supabase
+        .from('users')
+        .select('id, auth_id, role, email, username')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+      if (found?.id) {
+        profile = found;
+      } else {
+        // Si no existe, lo creamos con rol por defecto "employee"
+        const candidate = {
+          auth_id: user.id,
+          email: user.email || null,
+          username: (user.email || '').split('@')[0] || ('user_' + String(user.id).slice(0, 8)),
+          role: 'employee',
+        };
+        const { data: inserted, error: insErr } = await supabase
           .from('users')
-          .select('id, auth_id')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-
-        if (profile?.id) {
-          localStorage.setItem('user_id', profile.id); // id de perfil (public.users.id)
-        } else {
-          localStorage.setItem('user_id', user.id);    // fallback
-        }
-      } catch (profileError) {
-        console.warn("Advertencia: No se pudo obtener el perfil de usuario de public.users. Usando auth_user_id como fallback.", profileError);
-        localStorage.setItem('user_id', user.id);
+          .insert(candidate)
+          .select('id, auth_id, role, email, username')
+          .single();
+        if (insErr) throw insErr;
+        profile = inserted;
       }
 
-      // 4) Guardar id de AUTH
-      localStorage.setItem('auth_user_id', user.id);
+      const roleFromUsers = normalizeRole(profile?.role);
+      const roleFromMeta  = normalizeRole(user?.user_metadata?.role || user?.app_metadata?.role);
+      const role = roleFromUsers || roleFromMeta || 'employee';
 
-      // 5) Ir al dashboard
-      navigate('/', { replace: true });
+      // 4) Persistir info mínima
+      localStorage.setItem('auth_user_id', user.id);
+      localStorage.setItem('user_id', profile?.id || user.id);
+      localStorage.setItem('user_role', role);
+
+      // 5) Redirección según rol:
+      // - admin -> al dashboard ("/")
+      // - staff/chef/employee -> a "Órdenes" (pueden navegar a Mesas/Cocina)
+      if (role === 'admin') {
+        navigate('/', { replace: true });
+      } else {
+        navigate('/orders', { replace: true });
+      }
     } catch (err) {
-      console.error('[Login Error Catch]:', err); // Log más detallado para el catch general
-      setError(err?.message || 'No se pudo iniciar sesión. ¡Inténtalo de nuevo, no te rindas!');
+      console.error('[Login Error]:', err);
+      setError(err?.message || 'No se pudo iniciar sesión.');
     } finally {
       setLoading(false);
     }
@@ -88,16 +106,16 @@ const Login = () => {
         transition={{ duration: 0.6, type: "spring", damping: 15, stiffness: 100 }}
         className="bg-white rounded-3xl shadow-2xl p-8 md:p-12 w-full max-w-md border border-gray-200"
       >
-       <div className="text-center mb-8">
-  <img
-    src="https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png"
-    alt="Login"
-    className="block mx-auto mb-4 h-48 w-48 object-contain"
-    loading="lazy"
-  />
-  <h2 className="text-4xl font-extrabold text-gray-900 mb-2"></h2>
-  <p className="text-gray-500">Desarrollado y administrado por Soluciones Inteligentes DELSU.</p>
-</div>
+        <div className="text-center mb-8">
+          <img
+            src="https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png"
+            alt="Login"
+            className="block mx-auto mb-4 h-48 w-48 object-contain"
+            loading="lazy"
+          />
+          <p className="text-gray-500">Desarrollado y administrado por Soluciones Inteligentes DELSU.</p>
+        </div>
+
         {error && (
           <motion.div
             initial={{ opacity: 0, y: -10 }}
@@ -141,7 +159,7 @@ const Login = () => {
                 id="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full p-3 pl-10 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+                className="w-full p-3 pl-10 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duración-200"
                 placeholder="Tu contraseña"
                 required
               />
