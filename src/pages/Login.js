@@ -3,17 +3,29 @@ import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { User, Lock, LogIn, XCircle } from 'lucide-react';
 import { supabase } from '../supabaseClient';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-const normalizeRole = (val) => (val || '').toString().trim().toLowerCase();
+// Mapea role_id -> nombre (por si no existe la tabla roles o no trae join)
+const mapRoleId = (id) => {
+  const n = Number(id);
+  // Ajusta estos valores a tu semántica si difieren
+  const map = {
+    1: 'admin',
+    2: 'staff',
+    3: 'chef',
+    4: 'employee',
+  };
+  return map[n] || 'employee';
+};
 
 const Login = () => {
-  const [email, setEmail] = useState('');   // login por email
+  const [email, setEmail] = useState(''); // login por email
   const [password, setPassword] = useState('');
-  const [loading,   setLoading] = useState(false);
-  const [error,     setError]   = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -23,7 +35,7 @@ const Login = () => {
     try {
       const normEmail = email.trim().toLowerCase();
 
-      // 1) Iniciar sesión
+      // 1) Login Supabase Auth
       const { data, error: authError } = await supabase.auth.signInWithPassword({
         email: normEmail,
         password,
@@ -34,7 +46,7 @@ const Login = () => {
           throw new Error('Correo o contraseña incorrectos.');
         }
         if (raw.includes('email not confirmed')) {
-          throw new Error('Tu correo no está confirmado. Revisa tu bandeja.');
+          throw new Error('Tu correo no está confirmado. Revisa tu bandeja de entrada.');
         }
         throw new Error(authError.message || 'No se pudo iniciar sesión.');
       }
@@ -42,53 +54,82 @@ const Login = () => {
       const user = data?.user;
       if (!user) throw new Error('No se obtuvo el usuario de la sesión.');
 
-      // 2) Confirmar sesión activa
+      // 2) Sesión activa
       const { data: sessData, error: sessErr } = await supabase.auth.getSession();
-      if (sessErr || !sessData?.session) throw new Error('No hay sesión activa tras el login.');
+      if (sessErr || !sessData?.session) {
+        throw new Error('No hay sesión activa tras el login.');
+      }
 
-      // 3) Asegurar perfil en public.users y leer rol
-      let profile = null;
-      const { data: found } = await supabase
+      // 3) Leer/crear perfil en public.users usando role_id
+      let roleText = 'employee';
+      let profileId = null;
+
+      // Intenta leer perfil con join a roles (si existe)
+      const { data: profile, error: profErr } = await supabase
         .from('users')
-        .select('id, auth_id, role, email, username')
+        .select('id, email, role_id, roles:role_id ( name )') // <-- join si tienes tabla roles(id,name)
         .eq('auth_id', user.id)
         .maybeSingle();
 
-      if (found?.id) {
-        profile = found;
-      } else {
-        // Si no existe, lo creamos con rol por defecto "employee"
-        const candidate = {
-          auth_id: user.id,
-          email: user.email || null,
-          username: (user.email || '').split('@')[0] || ('user_' + String(user.id).slice(0, 8)),
-          role: 'employee',
-        };
-        const { data: inserted, error: insErr } = await supabase
-          .from('users')
-          .insert(candidate)
-          .select('id, auth_id, role, email, username')
-          .single();
-        if (insErr) throw insErr;
-        profile = inserted;
+      if (profErr) {
+        console.warn('No se pudo leer profile (users):', profErr.message);
       }
 
-      const roleFromUsers = normalizeRole(profile?.role);
-      const roleFromMeta  = normalizeRole(user?.user_metadata?.role || user?.app_metadata?.role);
-      const role = roleFromUsers || roleFromMeta || 'employee';
-
-      // 4) Persistir info mínima
-      localStorage.setItem('auth_user_id', user.id);
-      localStorage.setItem('user_id', profile?.id || user.id);
-      localStorage.setItem('user_role', role);
-
-      // 5) Redirección según rol:
-      // - admin -> al dashboard ("/")
-      // - staff/chef/employee -> a "Órdenes" (pueden navegar a Mesas/Cocina)
-      if (role === 'admin') {
-        navigate('/', { replace: true });
+      if (profile?.id) {
+        profileId = profile.id;
+        // Si hay roles.name lo usamos; si no, mapeamos role_id
+        roleText = (profile?.roles?.name || mapRoleId(profile?.role_id)).toLowerCase();
       } else {
-        navigate('/orders', { replace: true });
+        // Crear perfil con role_id por defecto
+        // Intentar obtener role_id de 'employee' desde tabla roles
+        let defaultRoleId = 4; // fallback si no existe tabla/registro
+        try {
+          const { data: roleRow } = await supabase
+            .from('roles')
+            .select('id')
+            .eq('name', 'employee')
+            .maybeSingle();
+          if (roleRow?.id) defaultRoleId = roleRow.id;
+        } catch {
+          // Si falla, usamos 4
+        }
+
+        const username =
+          (user.email || '').split('@')[0] || 'user_' + String(user.id).slice(0, 8);
+
+        const { data: inserted, error: insErr } = await supabase
+          .from('users')
+          .insert({
+            auth_id: user.id,
+            email: user.email || null,
+            username,
+            role_id: defaultRoleId,
+          })
+          .select('id, role_id')
+          .single();
+
+        if (insErr) {
+          console.error('Error insertando profile:', insErr);
+          throw new Error('No se pudo crear el perfil del usuario.');
+        }
+
+        profileId = inserted.id;
+        roleText = mapRoleId(inserted.role_id);
+      }
+
+      // 4) Guardar en localStorage (ui/guards usan el nombre del rol)
+      localStorage.setItem('user_id', profileId);     // id de public.users
+      localStorage.setItem('auth_user_id', user.id);  // id de auth.users
+      localStorage.setItem('user_role', roleText);    // admin/staff/chef/employee
+
+      // 5) Redirigir según rol o a donde venía
+      const from = location.state?.from?.pathname;
+      if (from) {
+        navigate(from, { replace: true });
+      } else if (roleText === 'admin') {
+        navigate('/', { replace: true });        // dashboard para admin
+      } else {
+        navigate('/orders', { replace: true });  // módulo operativo para no-admin
       }
     } catch (err) {
       console.error('[Login Error]:', err);
