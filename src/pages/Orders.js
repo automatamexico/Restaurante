@@ -20,7 +20,6 @@ import LoadingSpinner from '../components/LoadingSpinner';
    Ticket HTML (58mm, ancho útil 48mm)
    =========================== */
 const printKitchenTicket = (order) => {
-  // URL de tu logo (puede ser /logo_384.png dentro de /public o una URL externa)
   const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
 
   const createdAt = new Date(order.created_at);
@@ -60,7 +59,6 @@ const printKitchenTicket = (order) => {
       margin: 0 auto;
       padding: 2mm;
       box-sizing: border-box;
-
       color: #000;
       font-family: "Courier New", ui-monospace, Menlo, Consolas, monospace;
       font-weight: 700;
@@ -68,18 +66,13 @@ const printKitchenTicket = (order) => {
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
       text-rendering: optimizeLegibility;
-
-      /* Si el rollo desplaza un poco a la derecha, ajusta aquí en negativo (mm) */
       transform: translateX(0);
     }
-
     * {
       -webkit-font-smoothing: none;
       -moz-osx-font-smoothing: auto;
     }
-
     .center { text-align: center; }
-
     .logo {
       display: block;
       margin: 0 auto 2mm;
@@ -89,28 +82,23 @@ const printKitchenTicket = (order) => {
       image-rendering: crisp-edges;
       image-rendering: pixelated;
     }
-
     .title {
       font-weight: 900;
       font-size: 20px;
       margin: 1mm 0 0.5mm;
       letter-spacing: 0.2px;
     }
-
     .meta {
       font-size: 14px;
       font-weight: 800;
       margin-bottom: 1mm;
     }
-
     hr {
       border: 0;
       border-top: 1px solid #000;
       margin: 2mm 0;
     }
-
     .label { font-weight: 800; }
-
     table {
       width: 100%;
       border-collapse: collapse;
@@ -120,19 +108,12 @@ const printKitchenTicket = (order) => {
     .col-name  { width: 72%; padding: 1mm 0 0.5mm 0; font-weight: 800; }
     .col-qty   { width: 28%; text-align: center; font-weight: 900; }
     td { vertical-align: top; }
-
     .notes {
       font-size: 13px;
       font-weight: 700;
       margin-top: 0.5mm;
     }
-
-    .col-name, .notes {
-      word-break: break-word;
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-
+    .col-name, .notes { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
     @media print {
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     }
@@ -233,7 +214,7 @@ const fetchOrderDetailsForPrint = async (orderId) => {
       id, created_at, status,
       tables ( name ),
       users ( username ),
-      order_items ( quantity, price, notes, menu_items ( name ) )
+      order_items ( quantity, price, notes, menu_items ( id, name ) )
     `
     )
     .eq('id', orderId)
@@ -246,9 +227,9 @@ const fetchOrderDetailsForPrint = async (orderId) => {
    Detección de ítems agregados (para impresiones parciales)
    =========================== */
 const SNAP_KEY = (orderId) => `ORD_SNAP_${orderId}`;
+const makeKey = (menu_item_id, notes) => `${String(menu_item_id)}||${(notes || '').trim()}`;
 
-const makeKey = (menu_item_id, notes) => `${menu_item_id}||${(notes || '').trim()}`;
-
+// Snapshot a partir de una orden (por si lo usas en el futuro)
 const snapshotFromOrder = (order) => {
   const map = {};
   (order.order_items || []).forEach((it) => {
@@ -258,6 +239,7 @@ const snapshotFromOrder = (order) => {
   return map;
 };
 
+// Snapshot del formulario (siempre usa el id en string)
 const snapshotFromForm = (formItems) => {
   const map = {};
   (formItems || []).forEach((it) => {
@@ -314,7 +296,7 @@ const Orders = () => {
           price,
           notes,
           status,
-          menu_items ( name )
+          menu_items ( id, name )
         )
       `)
       .order('created_at', { ascending: false });
@@ -365,7 +347,7 @@ const Orders = () => {
 
   const calculateTotalAmount = () => {
     return formData.items.reduce((total, item) => {
-      const mi = menuItems.find((x) => x.id === item.menu_item_id);
+      const mi = menuItems.find((x) => String(x.id) === String(item.menu_item_id));
       const qty = Number(item.quantity || 0);
       return total + (mi ? mi.price * qty : 0);
     }, 0);
@@ -437,24 +419,22 @@ const Orders = () => {
         total_amount: totalAmount,
       };
 
-      // Si es edición, calcula delta de ítems NUEVOS (por plato+nota)
+      // Delta de ítems NUEVOS (por plato+nota), usando IDs como string
       let deltaItems = [];
       if (currentOrder) {
         const prevSnap = JSON.parse(localStorage.getItem(SNAP_KEY(currentOrder.id)) || '{}');
         const newSnap = snapshotFromForm(formData.items);
 
-        // delta = new - prev; solo positivos (agregados)
         Object.keys(newSnap).forEach((k) => {
           const add = (newSnap[k] || 0) - (prevSnap[k] || 0);
           if (add > 0) {
-            const [miIdStr, notes] = k.split('||');
-            const miId = Number(miIdStr);
-            const mi = menuItems.find((x) => x.id === miId);
+            const [miId, notes] = k.split('||'); // <-- NO Number(), mantén string
+            const mi = menuItems.find((x) => String(x.id) === String(miId));
             deltaItems.push({
               menu_item_id: miId,
               quantity: add,
               notes: notes || '',
-              menu_items: { name: mi ? mi.name : 'Producto' },
+              menu_items: { name: mi ? mi.name : '(sin nombre)' },
             });
           }
         });
@@ -482,7 +462,7 @@ const Orders = () => {
 
       // Insertar ítems actuales del formulario
       const itemsToInsert = formData.items.map((it) => {
-        const mi = menuItems.find((x) => x.id === it.menu_item_id);
+        const mi = menuItems.find((x) => String(x.id) === String(it.menu_item_id));
         return {
           order_id: newOrderData.id,
           menu_item_id: it.menu_item_id,
@@ -508,7 +488,7 @@ const Orders = () => {
         const header = await fetchOrderDetailsForPrint(newOrderData.id);
         const partial = {
           ...header,
-          order_items: deltaItems, // sólo nuevos
+          order_items: deltaItems, // sólo nuevos (con menu_items.name correcto)
         };
         setPrintOrder(partial);
         setPrintPromptOpen(true);
@@ -549,7 +529,7 @@ const Orders = () => {
   const openEditModal = (order) => {
     setCurrentOrder(order);
 
-    // Guarda snapshot previo para detectar agregados (plato+nota)
+    // Snapshot previo por (menu_item_id + notes) en STRING
     const prevMap = {};
     (order.order_items || []).forEach((it) => {
       const k = makeKey(it.menu_item_id ?? it.menu_items?.id, it.notes || '');
@@ -563,7 +543,7 @@ const Orders = () => {
       status: order.status,
       items: (order.order_items || []).map((item) => ({
         id: item.id,
-        menu_item_id: item.menu_item_id ?? null,
+        menu_item_id: item.menu_item_id ?? null, // UUID/string
         quantity: item.quantity,
         notes: item.notes || '',
       })),
@@ -629,7 +609,7 @@ const Orders = () => {
           <input
             type="text"
             placeholder="Buscar órdenes por mesa, mesero o estado..."
-            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duración-200"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -637,7 +617,7 @@ const Orders = () => {
         </div>
         <motion.button
           onClick={openAddModal}
-          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
+          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duración-200 w-full md:w-auto justify-center"
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
         >
@@ -666,7 +646,7 @@ const Orders = () => {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.5, delay: index * 0.05 }}
-                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duration-300"
+                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duración-300"
               >
                 <div>
                   <div className="flex items-center justify-between mb-3">
@@ -706,7 +686,7 @@ const Orders = () => {
                     onClick={() => openEditModal(order)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duration-200"
+                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duración-200"
                     title="Editar Orden"
                   >
                     <Edit className="w-5 h-5" />
@@ -715,7 +695,7 @@ const Orders = () => {
                     onClick={() => handleDeleteOrder(order.id)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200"
+                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duración-200"
                     title="Eliminar Orden"
                   >
                     <Trash2 className="w-5 h-5" />
@@ -847,7 +827,7 @@ const Orders = () => {
                         name="notes"
                         value={item.notes}
                         onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus-border-transparent text-sm"
                         placeholder="Sin cebolla, extra picante…"
                       />
                     </div>
@@ -855,7 +835,7 @@ const Orders = () => {
                     <motion.button
                       type="button"
                       onClick={() => handleRemoveItem(index)}
-                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200 mt-auto"
+                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duración-200 mt-auto"
                       whileHover={{ scale: 1.1 }}
                       whileTap={{ scale: 0.9 }}
                     >
@@ -867,7 +847,7 @@ const Orders = () => {
                 <motion.button
                   type="button"
                   onClick={handleAddItem}
-                  className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors duration-200 flex items-center justify-center space-x-2 mt-2"
+                  className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors duración-200 flex items-center justify-center space-x-2 mt-2"
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                 >
@@ -881,7 +861,7 @@ const Orders = () => {
 
                 <motion.button
                   type="submit"
-                  className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center mt-4"
+                  className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duración-200 flex items-center justify-center mt-4"
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   disabled={loading}
@@ -904,7 +884,7 @@ const Orders = () => {
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md relative"
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md relativo"
               initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 40 }}
@@ -955,5 +935,6 @@ const Orders = () => {
 };
 
 export default Orders;
+
 
 
