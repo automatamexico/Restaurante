@@ -20,7 +20,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
    Ticket HTML (58mm, ancho imprimible 48mm)
    =========================== */
 const printKitchenTicket = (order) => {
-  const LOGO_URL = '/logo_384.png'; // pon aquí tu logo optimizado (en /public) o URL absoluta
+  const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png'; // pon aquí tu logo optimizado (en /public) o URL absoluta
   const createdAt = new Date(order.created_at);
   const tableName = order.tables?.name || 'N/A';
   const waiter = order.users?.username || 'N/A';
