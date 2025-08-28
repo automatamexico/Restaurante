@@ -25,6 +25,15 @@ import LoadingSpinner from '../components/LoadingSpinner';
 // MISMO LOGO QUE COCINA:
 const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
 
+// Mapear claves de BD -> etiquetas en español
+const PAYMENT_LABELS = {
+  cash: 'Efectivo',
+  card: 'Tarjeta',
+  transfer: 'Transferencia',
+  other: 'Otro'
+};
+const methodLabel = (key) => PAYMENT_LABELS[key] ?? (key || '—');
+
 // Columna de fecha en payments (debe tener DEFAULT now() en la BD)
 const DATE_COL = 'created_at';
 // Estado "pagada" de la orden
@@ -380,7 +389,7 @@ const Cashier = () => {
   const s = searchTerm.trim().toLowerCase();
   const filteredPayments = (payments || []).filter(p => {
     const mesa = p?.orders?.tables?.name ? String(p.orders.tables.name).toLowerCase() : '';
-    const metodo = p?.payment_method ? String(p.payment_method).toLowerCase() : '';
+    const metodo = methodLabel(p?.payment_method).toLowerCase();
     const monto = p?.amount != null ? String(p.amount) : '';
     return !s || mesa.includes(s) || metodo.includes(s) || monto.includes(s);
   });
@@ -428,10 +437,6 @@ const Cashier = () => {
       const change = Number.isFinite(tendered) ? Math.max(0, tendered - Number(payment.amount || 0)) : 0;
 
       const items = detail?.order_items || [];
-      // paidTotal y due no se muestran, pero pueden ser útiles si luego los necesitas:
-      const paymentsRows = detail?.payments || [];
-      const paidTotal = (paymentsRows || []).reduce((s, r) => s + Number(r.amount || 0), 0); // no usado en impresión
-      const due = Math.max(0, Number(detail.total_amount || 0) - paidTotal);                 // no usado en impresión
 
       // Fecha del pago en CDMX
       const printedWhen = payment[DATE_COL]
@@ -521,7 +526,6 @@ const Cashier = () => {
         ? `<img src="${LOGO_URL}" alt="logo" class="logo" width="384" crossorigin="anonymous" referrerpolicy="no-referrer" />`
         : `<div class="title center">TICKET</div>`;
 
-      // tabla de ítems
       const itemsHtml = items.length
         ? items.map(it => {
             const name = it?.menu_items?.name || '—';
@@ -541,7 +545,7 @@ const Cashier = () => {
           }).join('')
         : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-amt"></td></tr>`;
 
-      // *** QUITADO: Pagado (acumulado), Pendiente y Pago actual ***
+      // Ticket sin "Pagado (acumulado)", "Pendiente" ni "Pago actual"
       const html = `
         <!DOCTYPE html>
         <html>
@@ -589,11 +593,11 @@ const Cashier = () => {
                 </tr>
                 <tr>
                   <td class="col-name">Método</td><td></td>
-                  <td class="col-amt">${payment.payment_method || '—'}</td>
+                  <td class="col-amt">${methodLabel(payment.payment_method)}</td>
                 </tr>
                 ${Number.isFinite(tendered) ? `
                   <tr><td class="col-name">Entregado</td><td></td><td class="col-amt">$${tendered.toFixed(2)}</td></tr>
-                  <tr><td class="col-name"><strong>Cambio</strong></td><td></td><td class="col-amt"><strong>$${change.toFixed(2)}</strong></td></tr>
+                  <tr><td class="col-name"><strong>Cambio</strong></td><td></td><td class="col-amt"><strong>$${(Math.max(0, tendered - Number(payment.amount || 0))).toFixed(2)}</strong></td></tr>
                 ` : ''}
               </tbody>
             </table>
@@ -772,7 +776,7 @@ const Cashier = () => {
                     </p>
                     <p className="text-gray-600 mb-2 flex items-center">
                       <DollarSign className="w-4 h-4 mr-2 text-gray-500" />
-                      Método: {payment.payment_method || '—'}
+                      Método: {methodLabel(payment.payment_method)}
                     </p>
                     <p className="text-gray-600 mb-2 flex items-center">
                       <User className="w-4 h-4 mr-2 text-gray-500" />
@@ -973,4 +977,3 @@ const Cashier = () => {
 };
 
 export default Cashier;
-
