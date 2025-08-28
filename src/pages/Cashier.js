@@ -25,7 +25,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 // MISMO LOGO QUE COCINA:
 const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
 
-// Mapear claves de BD -> etiquetas en español
+// Mapear claves de BD -> etiquetas en español (método de pago)
 const PAYMENT_LABELS = {
   cash: 'Efectivo',
   card: 'Tarjeta',
@@ -33,6 +33,17 @@ const PAYMENT_LABELS = {
   other: 'Otro'
 };
 const methodLabel = (key) => PAYMENT_LABELS[key] ?? (key || '—');
+
+// Mapear estado de la orden -> español
+const STATUS_LABELS = {
+  pending: 'Pendiente',
+  preparing: 'Preparando',
+  ready: 'Lista',
+  served: 'Servida',
+  paid: 'Pagada',
+  cancelled: 'Cancelada'
+};
+const statusLabel = (key) => STATUS_LABELS[key] ?? (key || '—');
 
 // Columna de fecha en payments (debe tener DEFAULT now() en la BD)
 const DATE_COL = 'created_at';
@@ -51,6 +62,10 @@ const Cashier = () => {
   const [debug, setDebug] = useState([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentPayment, setCurrentPayment] = useState(null);
+
+  // Modal de confirmación de impresión (después de REGISTRAR pago)
+  const [printPromptOpen, setPrintPromptOpen] = useState(false);
+  const [printPayment, setPrintPayment] = useState(null);
 
   // Form: NO incluye fecha/hora editable (la BD pone now())
   const [formData, setFormData] = useState({
@@ -281,7 +296,10 @@ const Cashier = () => {
         payment_method: formData.payment_method || null
       };
 
+      let inserted = null;
+
       if (currentPayment) {
+        // EDITAR pago (no dispara confirmación de impresión)
         const statusNow = currentPayment?.orders?.status;
         if (statusNow === PAID_STATUS) {
           throw new Error('No puedes editar pagos de una orden ya pagada.');
@@ -292,19 +310,39 @@ const Cashier = () => {
           throw error;
         }
       } else {
-        const { error } = await supabase.from('payments').insert(toSave);
+        // INSERTAR pago (mostramos confirmación de impresión)
+        const { data, error } = await supabase
+          .from('payments')
+          .insert(toSave)
+          .select(`id, order_id, amount, payment_method, ${DATE_COL}`)
+          .single();
         if (error) {
           logDbg('payments insert', error);
           throw error;
         }
+        inserted = data;
       }
 
       // Marcar orden como pagada si aplica
       await settleOrderIfFullyPaid(toSave.order_id);
 
-      // Refrescar y cerrar
+      // Refrescar
       await fetchPaymentsAndOrders();
+
+      // Cerrar modal del formulario
       closeModal();
+
+      // Si fue un nuevo pago, construir objeto para impresión y preguntar
+      if (!currentPayment) {
+        const paymentForPrint = inserted || {
+          order_id: toSave.order_id,
+          amount: toSave.amount,
+          payment_method: toSave.payment_method,
+          [DATE_COL]: new Date().toISOString()
+        };
+        setPrintPayment(paymentForPrint);
+        setPrintPromptOpen(true);
+      }
     } catch (err) {
       console.error('handleAddEditPayment error:', err);
       setError(`¡Ups! No pude guardar el pago. ${err.message ?? ''}`);
@@ -429,7 +467,7 @@ const Cashier = () => {
 
       // Monto entregado (efectivo) opcional para mostrar cambio
       let tendered = Number(opts.tendered);
-      if (!Number.isFinite(tendered) && payment.payment_method === 'cash') {
+      if (!Number.isFinite(tendered) && (payment.payment_method === 'cash' || payment?.payment_method === 'cash')) {
         const input = window.prompt('Monto entregado (opcional, solo efectivo):', Number(payment.amount).toFixed(2));
         const n = Number(input);
         if (Number.isFinite(n)) tendered = n;
@@ -545,7 +583,7 @@ const Cashier = () => {
           }).join('')
         : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-amt"></td></tr>`;
 
-      // Ticket sin "Pagado (acumulado)", "Pendiente" ni "Pago actual"
+      // Ticket (estado en español) y SIN pagado/pendiente/pago actual (ya removidos)
       const html = `
         <!DOCTYPE html>
         <html>
@@ -566,7 +604,7 @@ const Cashier = () => {
             <hr />
 
             <div><span class="label">Mesa:</span> ${detail?.tables?.name || 'N/A'}</div>
-            <div><span class="label">Estado:</span> ${detail?.status || '—'}</div>
+            <div><span class="label">Estado:</span> ${statusLabel(detail?.status)}</div>
 
             <hr />
 
@@ -688,7 +726,7 @@ const Cashier = () => {
               <div key={pb.id} className="rounded-xl border border-gray-200 p-4 shadow-sm">
                 <div className="flex items-center justify-between mb-2">
                   <div className="font-semibold text-gray-800">Orden #{String(pb.id).slice(0,8)}</div>
-                  <div className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{pb.status}</div>
+                  <div className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-700">{statusLabel(pb.status)}</div>
                 </div>
                 <p className="text-gray-600 mb-1">Mesa: <span className="font-medium">{pb.table_name}</span></p>
                 <p className="text-gray-600 mb-1">Total: <span className="font-medium">${pb.total.toFixed(2)}</span></p>
@@ -712,7 +750,7 @@ const Cashier = () => {
           <input
             type="text"
             placeholder="Buscar pagos por mesa, método o monto..."
-            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duración-200"
+            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -720,7 +758,7 @@ const Cashier = () => {
         </div>
         <motion.button
           onClick={openAddModal}
-          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
+          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duración-200 w-full md:w-auto justify-center"
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
         >
@@ -828,7 +866,7 @@ const Cashier = () => {
         </AnimatePresence>
       </div>
 
-      {/* === MODAL === */}
+      {/* === MODAL: NUEVO/EDITAR PAGO === */}
       <AnimatePresence>
         {isModalOpen && (
           <motion.div
@@ -968,6 +1006,62 @@ const Cashier = () => {
                   {saving ? <LoadingSpinner /> : (currentPayment ? 'Guardar Cambios' : 'Registrar Pago')}
                 </motion.button>
               </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* === MODAL: Confirmar impresión tras registrar pago === */}
+      <AnimatePresence>
+        {printPromptOpen && (
+          <motion.div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md relative"
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            >
+              <button
+                onClick={() => setPrintPromptOpen(false)}
+                className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+
+              <div className="flex items-center gap-3 mb-4">
+                <Printer className="w-7 h-7 text-indigo-600" />
+                <h3 className="text-2xl font-bold text-gray-800">Imprimir ticket de la orden</h3>
+              </div>
+
+              <p className="text-gray-600 mb-6">
+                ¿Deseas imprimir el ticket de caja de la orden asociada?
+              </p>
+
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-100"
+                  onClick={() => setPrintPromptOpen(false)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+                  onClick={() => {
+                    if (printPayment) printReceiptForPayment(printPayment);
+                    setPrintPromptOpen(false);
+                  }}
+                >
+                  Aceptar e imprimir
+                </button>
+              </div>
             </motion.div>
           </motion.div>
         )}
