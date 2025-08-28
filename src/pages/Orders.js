@@ -17,11 +17,10 @@ import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 /* ===========================
-   Ticket HTML (58mm, ancho imprimible 48mm)
+   Ticket HTML (58mm, ancho útil 48mm)
    =========================== */
-// Ticket de cocina SIN precios/total, centrado
 const printKitchenTicket = (order) => {
-  // ⬇️ pon aquí tu logo (o deja un archivo en /public y usa '/logo_384.png')
+  // URL de tu logo (puede ser /logo_384.png dentro de /public o una URL externa)
   const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
 
   const createdAt = new Date(order.created_at);
@@ -52,30 +51,31 @@ const printKitchenTicket = (order) => {
   <meta charset="utf-8" />
   <title>Ticket Cocina</title>
   <style>
-    /* Página de 58mm sin márgenes del navegador */
     @page { size: 58mm auto; margin: 0; }
-
     html, body { margin: 0; padding: 0; }
     body { width: 58mm; }
 
-    /* Contenedor centrado; el ticket mide 48mm (ancho útil) */
     .ticket {
       width: 48mm;
-      margin: 0 auto;             /* centra horizontal */
+      margin: 0 auto;
       padding: 2mm;
       box-sizing: border-box;
 
-      /* Fuentes bien negras y legibles para térmica */
       color: #000;
-      font-family: "Courier New", Courier, ui-monospace, monospace;
+      font-family: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+      font-weight: 700;
+      line-height: 1.25;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
       text-rendering: optimizeLegibility;
 
-      /* Si lo ves un poco a la derecha, prueba:
-         transform: translateX(-0.5mm);
-         (valores típicos: -0.5mm a -1mm) */
+      /* Si el rollo desplaza un poco a la derecha, ajusta aquí en negativo (mm) */
       transform: translateX(0);
+    }
+
+    * {
+      -webkit-font-smoothing: none;
+      -moz-osx-font-smoothing: auto;
     }
 
     .center { text-align: center; }
@@ -83,43 +83,47 @@ const printKitchenTicket = (order) => {
     .logo {
       display: block;
       margin: 0 auto 2mm;
-      width: 48mm;          /* ocupa ancho útil completo */
+      width: 48mm;
       max-width: 48mm;
       image-rendering: -webkit-optimize-contrast;
       image-rendering: crisp-edges;
+      image-rendering: pixelated;
     }
 
     .title {
       font-weight: 900;
-      font-size: 18px;      /* más grande = menos borroso */
+      font-size: 20px;
       margin: 1mm 0 0.5mm;
+      letter-spacing: 0.2px;
     }
 
     .meta {
-      font-size: 13px;      /* más grande y en negro */
-      font-weight: 700;
+      font-size: 14px;
+      font-weight: 800;
       margin-bottom: 1mm;
     }
 
     hr {
       border: 0;
-      border-top: 1px dashed #000;
+      border-top: 1px solid #000;
       margin: 2mm 0;
     }
+
+    .label { font-weight: 800; }
 
     table {
       width: 100%;
       border-collapse: collapse;
       table-layout: fixed;
-      font-size: 13px;      /* sube un punto para nitidez */
+      font-size: 14px;
     }
-    .col-name  { width: 72%; padding: 1mm 0 0.5mm 0; }
-    .col-qty   { width: 28%; text-align: center; }
+    .col-name  { width: 72%; padding: 1mm 0 0.5mm 0; font-weight: 800; }
+    .col-qty   { width: 28%; text-align: center; font-weight: 900; }
     td { vertical-align: top; }
 
     .notes {
-      font-size: 12px;
-      font-weight: 600;
+      font-size: 13px;
+      font-weight: 700;
       margin-top: 0.5mm;
     }
 
@@ -129,7 +133,9 @@ const printKitchenTicket = (order) => {
       white-space: normal;
     }
 
-    * { box-sizing: border-box; }
+    @media print {
+      * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    }
   </style>
 </head>
 <body>
@@ -143,9 +149,9 @@ const printKitchenTicket = (order) => {
 
     <hr />
 
-    <div><strong>Mesa:</strong> ${tableName}</div>
-    <div><strong>Mesero:</strong> ${waiter}</div>
-    <div><strong>Estado:</strong> ${order.status}</div>
+    <div><span class="label">Mesa:</span> ${tableName}</div>
+    <div><span class="label">Mesero:</span> ${waiter}</div>
+    <div><span class="label">Estado:</span> ${order.status}</div>
 
     <hr />
 
@@ -163,8 +169,7 @@ const printKitchenTicket = (order) => {
   </div>
 
   <script>
-    // Da un pequeño tiempo a que cargue el logo
-    setTimeout(function(){ window.print(); }, 120);
+    setTimeout(function(){ window.print(); }, 150);
   </script>
 </body>
 </html>
@@ -238,6 +243,31 @@ const fetchOrderDetailsForPrint = async (orderId) => {
 };
 
 /* ===========================
+   Detección de ítems agregados (para impresiones parciales)
+   =========================== */
+const SNAP_KEY = (orderId) => `ORD_SNAP_${orderId}`;
+
+const makeKey = (menu_item_id, notes) => `${menu_item_id}||${(notes || '').trim()}`;
+
+const snapshotFromOrder = (order) => {
+  const map = {};
+  (order.order_items || []).forEach((it) => {
+    const k = makeKey(it.menu_item_id ?? it.menu_items?.id, it.notes || '');
+    map[k] = (map[k] || 0) + Number(it.quantity || 0);
+  });
+  return map;
+};
+
+const snapshotFromForm = (formItems) => {
+  const map = {};
+  (formItems || []).forEach((it) => {
+    const k = makeKey(it.menu_item_id, it.notes || '');
+    map[k] = (map[k] || 0) + Number(it.quantity || 0);
+  });
+  return map;
+};
+
+/* ===========================
    Componente principal
    =========================== */
 const Orders = () => {
@@ -250,7 +280,7 @@ const Orders = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(null);
 
-  // NUEVAS órdenes arrancan en "preparing"
+  // Nuevas órdenes: "preparing"
   const [formData, setFormData] = useState({
     table_id: '',
     user_id: '',
@@ -341,7 +371,7 @@ const Orders = () => {
     }, 0);
   };
 
-  // Validación fuerte del formulario
+  // Validación
   const validateForm = () => {
     if (!formData.table_id) {
       setError('Selecciona una mesa.');
@@ -365,7 +395,7 @@ const Orders = () => {
     return true;
   };
 
-  // Insert helper con fallback (sin total_amount) si tu BD no tiene esa columna
+  // Insert con fallback (si tu BD no tiene total_amount)
   const insertOrderWithFallback = async (payload) => {
     let { data, error } = await supabase
       .from('orders')
@@ -375,7 +405,11 @@ const Orders = () => {
 
     if (error && /total_amount/i.test(error.message)) {
       const { total_amount, ...withoutTotal } = payload;
-      ({ data, error } = await supabase.from('orders').insert(withoutTotal).select().single());
+      ({ data, error } = await supabase
+        .from('orders')
+        .insert(withoutTotal)
+        .select()
+        .single());
     }
     return { data, error };
   };
@@ -403,96 +437,80 @@ const Orders = () => {
         total_amount: totalAmount,
       };
 
-      // ⚠️ Si es edición, detecta QUÉ ÍTEMS SON NUEVOS (no tienen id)
-      const newItemsClient = currentOrder
-        ? formData.items.filter((it) => !it.id)
-        : [];
+      // Si es edición, calcula delta de ítems NUEVOS (por plato+nota)
+      let deltaItems = [];
+      if (currentOrder) {
+        const prevSnap = JSON.parse(localStorage.getItem(SNAP_KEY(currentOrder.id)) || '{}');
+        const newSnap = snapshotFromForm(formData.items);
+
+        // delta = new - prev; solo positivos (agregados)
+        Object.keys(newSnap).forEach((k) => {
+          const add = (newSnap[k] || 0) - (prevSnap[k] || 0);
+          if (add > 0) {
+            const [miIdStr, notes] = k.split('||');
+            const miId = Number(miIdStr);
+            const mi = menuItems.find((x) => x.id === miId);
+            deltaItems.push({
+              menu_item_id: miId,
+              quantity: add,
+              notes: notes || '',
+              menu_items: { name: mi ? mi.name : 'Producto' },
+            });
+          }
+        });
+      }
 
       if (currentOrder) {
-        // --- EDITAR ORDEN ---
         const { error: updateOrderError } = await supabase
           .from('orders')
           .update(orderToSave)
           .eq('id', currentOrder.id);
         if (updateOrderError) throw updateOrderError;
-
         newOrderData = currentOrder;
 
-        // (Implementación simple) Reemplazamos ítems:
+        // Reemplaza ítems
         const { error: delErr } = await supabase
           .from('order_items')
           .delete()
           .eq('order_id', newOrderData.id);
         if (delErr) throw delErr;
-
-        const itemsToInsert = formData.items.map((it) => {
-          const mi = menuItems.find((x) => x.id === it.menu_item_id);
-          return {
-            order_id: newOrderData.id,
-            menu_item_id: it.menu_item_id,
-            quantity: Number(it.quantity),
-            price: mi ? Number(mi.price) : 0,
-            notes: it.notes || null,
-          };
-        });
-
-        if (itemsToInsert.length) {
-          const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
-          if (insItemsErr) throw insItemsErr;
-        }
-
-        // ➜ Si se agregaron ítems nuevos, arma un "mini-orden" SOLO con esos nuevos para imprimir
-        if (newItemsClient.length > 0) {
-          const tableName =
-            tables.find((t) => String(t.id) === String(formData.table_id))?.name ||
-            currentOrder.tables?.name ||
-            'N/A';
-
-          // Construimos un objeto compatible con printKitchenTicket (solo nombres, cant y notas)
-          const partialOrder = {
-            id: newOrderData.id,
-            created_at: currentOrder.created_at,
-            status: orderToSave.status,
-            tables: { name: tableName },
-            users: { username: currentOrder.users?.username || 'N/A' },
-            order_items: newItemsClient.map((it) => {
-              const mi = menuItems.find((m) => m.id === it.menu_item_id);
-              return {
-                quantity: Number(it.quantity),
-                notes: it.notes || '',
-                menu_items: { name: mi ? mi.name : 'Ítem' },
-              };
-            }),
-          };
-
-          setPrintOrder(partialOrder);
-          setPrintPromptOpen(true);
-        }
       } else {
-        // --- CREAR ORDEN ---
         const { data, error: insertOrderError } = await insertOrderWithFallback(orderToSave);
         if (insertOrderError) throw insertOrderError;
         newOrderData = data;
+      }
 
-        const itemsToInsert = formData.items.map((it) => {
-          const mi = menuItems.find((x) => x.id === it.menu_item_id);
-          return {
-            order_id: newOrderData.id,
-            menu_item_id: it.menu_item_id,
-            quantity: Number(it.quantity),
-            price: mi ? Number(mi.price) : 0,
-            notes: it.notes || null,
-          };
-        });
+      // Insertar ítems actuales del formulario
+      const itemsToInsert = formData.items.map((it) => {
+        const mi = menuItems.find((x) => x.id === it.menu_item_id);
+        return {
+          order_id: newOrderData.id,
+          menu_item_id: it.menu_item_id,
+          quantity: Number(it.quantity),
+          price: mi ? Number(mi.price) : 0,
+          notes: it.notes || null,
+        };
+      });
 
-        if (itemsToInsert.length) {
-          const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
-          if (insItemsErr) throw insItemsErr;
-        }
+      if (itemsToInsert.length) {
+        const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
+        if (insItemsErr) throw insItemsErr;
+      }
 
-        // Para orden NUEVA, imprimimos TODO (como antes)
+      // Preguntar impresión
+      if (!currentOrder) {
+        // Nueva orden: imprimir TODO
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
         setPrintOrder(fullOrder);
+        setPrintPromptOpen(true);
+      } else if (deltaItems.length > 0) {
+        // Edición: imprimir SOLO lo nuevo
+        const header = await fetchOrderDetailsForPrint(newOrderData.id);
+        const partial = {
+          ...header,
+          order_items: deltaItems, // sólo nuevos
+        };
+        setPrintOrder(partial);
         setPrintPromptOpen(true);
       }
 
@@ -530,16 +548,24 @@ const Orders = () => {
 
   const openEditModal = (order) => {
     setCurrentOrder(order);
+
+    // Guarda snapshot previo para detectar agregados (plato+nota)
+    const prevMap = {};
+    (order.order_items || []).forEach((it) => {
+      const k = makeKey(it.menu_item_id ?? it.menu_items?.id, it.notes || '');
+      prevMap[k] = (prevMap[k] || 0) + Number(it.quantity || 0);
+    });
+    localStorage.setItem(SNAP_KEY(order.id), JSON.stringify(prevMap));
+
     setFormData({
       table_id: order.table_id,
       user_id: order.user_id,
       status: order.status,
       items: (order.order_items || []).map((item) => ({
         id: item.id,
-        // menu_item_id viene del SELECT; si no, ajusta a tu esquema
-        menu_item_id: item.menu_item_id || null,
+        menu_item_id: item.menu_item_id ?? null,
         quantity: item.quantity,
-        notes: item.notes,
+        notes: item.notes || '',
       })),
     });
     setIsModalOpen(true);
@@ -562,20 +588,13 @@ const Orders = () => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'pending':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'preparing':
-        return 'bg-blue-100 text-blue-800';
-      case 'ready':
-        return 'bg-green-100 text-green-800';
-      case 'served':
-        return 'bg-purple-100 text-purple-800';
-      case 'paid':
-        return 'bg-gray-100 text-gray-800';
-      case 'cancelled':
-        return 'bg-red-100 text-red-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
+      case 'pending':    return 'bg-yellow-100 text-yellow-800';
+      case 'preparing':  return 'bg-blue-100 text-blue-800';
+      case 'ready':      return 'bg-green-100 text-green-800';
+      case 'served':     return 'bg-purple-100 text-purple-800';
+      case 'paid':       return 'bg-gray-100 text-gray-800';
+      case 'cancelled':  return 'bg-red-100 text-red-800';
+      default:           return 'bg-gray-100 text-gray-800';
     }
   };
 
