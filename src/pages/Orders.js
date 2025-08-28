@@ -1,4 +1,5 @@
 /* global qz */
+/* eslint-disable no-undef */
 // src/pages/Orders.jsx
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
