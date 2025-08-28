@@ -19,108 +19,149 @@ import LoadingSpinner from '../components/LoadingSpinner';
 /* ===========================
    Ticket HTML (58mm, ancho imprimible 48mm)
    =========================== */
+// REEMPLAZA tu función por esta
 const printKitchenTicket = (order) => {
-  const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png'; // pon aquí tu logo optimizado (en /public) o URL absoluta
+  // ⬇️ pon aquí tu logo (o deja un archivo en /public y usa '/logo_384.png')
+  const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
+
   const createdAt = new Date(order.created_at);
   const tableName = order.tables?.name || 'N/A';
   const waiter = order.users?.username || 'N/A';
   const items = order.order_items || [];
 
-  const itemsHTML =
-    items.length > 0
-      ? items
-          .map(
-            (it) => `
+  const itemsHTML = items.length
+    ? items.map(it => `
         <tr>
           <td class="col-name">
             ${it.menu_items?.name || 'Ítem'}
             ${it.notes ? `<div class="notes">Notas: ${it.notes}</div>` : ''}
           </td>
           <td class="col-qty">${Number(it.quantity || 0)}</td>
-          <td class="col-price">$${Number(it.price || 0).toFixed(2)}</td>
         </tr>
-      `
-          )
-          .join('')
-      : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-price"></td></tr>`;
-
-  const total = items.reduce(
-    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
-    0
-  );
+      `).join('')
+    : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td></tr>`;
 
   const html = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Ticket Cocina #${String(order.id).slice(0, 8)}</title>
+  <title>Ticket Cocina</title>
   <style>
+    /* Página de 58mm sin márgenes del navegador */
     @page { size: 58mm auto; margin: 0; }
+
     html, body { margin: 0; padding: 0; }
-    body { width: 48mm; }
+    body { width: 58mm; }
+
+    /* Contenedor centrado; el ticket mide 48mm (ancho útil) */
     .ticket {
       width: 48mm;
-      box-sizing: border-box;
+      margin: 0 auto;             /* centra horizontal */
       padding: 2mm;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      box-sizing: border-box;
+
+      /* Fuentes bien negras y legibles para térmica */
+      color: #000;
+      font-family: "Courier New", Courier, ui-monospace, monospace;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
-      color: #000;
+      text-rendering: optimizeLegibility;
+
+      /* Si lo ves un poco a la derecha, prueba:
+         transform: translateX(-0.5mm);
+         (valores típicos: -0.5mm a -1mm) */
+      transform: translateX(0);
     }
+
     .center { text-align: center; }
-    .title { font-weight: 800; font-size: 16px; margin: 2mm 0 1mm; }
-    .muted { color: #333; font-size: 11px; }
-    hr { border: 0; border-top: 1px dashed #000; margin: 2mm 0; }
+
     .logo {
       display: block;
       margin: 0 auto 2mm;
-      width: 48mm;
+      width: 48mm;          /* ocupa ancho útil completo */
       max-width: 48mm;
       image-rendering: -webkit-optimize-contrast;
       image-rendering: crisp-edges;
     }
+
+    .title {
+      font-weight: 900;
+      font-size: 18px;      /* más grande = menos borroso */
+      margin: 1mm 0 0.5mm;
+    }
+
+    .meta {
+      font-size: 13px;      /* más grande y en negro */
+      font-weight: 700;
+      margin-bottom: 1mm;
+    }
+
+    hr {
+      border: 0;
+      border-top: 1px dashed #000;
+      margin: 2mm 0;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
       table-layout: fixed;
-      font-size: 12px;
+      font-size: 13px;      /* sube un punto para nitidez */
     }
-    .col-name  { width: 64%; padding: 1mm 0 0.5mm 0; }
-    .col-qty   { width: 18%; text-align: center; }
-    .col-price { width: 18%; text-align: right; }
+    .col-name  { width: 72%; padding: 1mm 0 0.5mm 0; }
+    .col-qty   { width: 28%; text-align: center; }
     td { vertical-align: top; }
-    .notes { font-size: 10px; color: #333; margin-top: 0.5mm; }
-    .col-name, .notes { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
-    .totals { margin-top: 2mm; font-size: 13px; font-weight: 700; text-align: right; }
+
+    .notes {
+      font-size: 12px;
+      font-weight: 600;
+      margin-top: 0.5mm;
+    }
+
+    .col-name, .notes {
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+
     * { box-sizing: border-box; }
   </style>
 </head>
 <body>
   <div class="ticket">
-    ${LOGO_URL ? `<img src="${LOGO_URL}" alt="Logo" class="logo" width="384" />` : ''}
+    ${LOGO_URL ? `<img src="${LOGO_URL}" alt="Logo" class="logo" width="384" crossorigin="anonymous" referrerpolicy="no-referrer" />` : ''}
+
     <div class="center title">ORDEN COCINA</div>
-    <div class="center muted">#${String(order.id).slice(0, 8)} — ${createdAt.toLocaleString('es-MX')}</div>
+    <div class="center meta">
+      #${String(order.id).slice(0, 8)} — ${createdAt.toLocaleDateString('es-MX')} ${createdAt.toLocaleTimeString('es-MX')}
+    </div>
+
     <hr />
+
     <div><strong>Mesa:</strong> ${tableName}</div>
     <div><strong>Mesero:</strong> ${waiter}</div>
     <div><strong>Estado:</strong> ${order.status}</div>
+
     <hr />
+
     <table>
       <thead>
         <tr>
           <td class="col-name"><strong>Producto</strong></td>
           <td class="col-qty"><strong>Cant</strong></td>
-          <td class="col-price"><strong>Precio</strong></td>
         </tr>
       </thead>
       <tbody>
         ${itemsHTML}
       </tbody>
     </table>
-    <div class="totals">Total: $${total.toFixed(2)}</div>
   </div>
-  <script> setTimeout(function(){ window.print(); }, 100); </script>
+
+  <script>
+    // Da un pequeño tiempo a que cargue el logo
+    setTimeout(function(){ window.print(); }, 120);
+  </script>
 </body>
 </html>
 `;
