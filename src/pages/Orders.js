@@ -17,11 +17,10 @@ import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 /* ===========================
-   Ticket HTML (58mm, ancho imprimible 48mm) 
+   Ticket HTML (58mm, ancho imprimible 48mm)
    =========================== */
 const printKitchenTicket = (order) => {
-  const LOGO_URL = '/logo_384.png'; // sube tu archivo optimizado a /public o usa una URL absoluta
-
+  const LOGO_URL = '/logo_384.png'; // pon aquí tu logo optimizado (en /public) o URL absoluta
   const createdAt = new Date(order.created_at);
   const tableName = order.tables?.name || 'N/A';
   const waiter = order.users?.username || 'N/A';
@@ -121,9 +120,7 @@ const printKitchenTicket = (order) => {
     </table>
     <div class="totals">Total: $${total.toFixed(2)}</div>
   </div>
-  <script>
-    setTimeout(function(){ window.print(); }, 100);
-  </script>
+  <script> setTimeout(function(){ window.print(); }, 100); </script>
 </body>
 </html>
 `;
@@ -230,23 +227,22 @@ const Orders = () => {
     setLoading(true);
 
     const { data: ordersData } = await supabase
-  .from('orders')
-  .select(`
-    *,
-    tables ( name ),
-    users ( username ),
-    order_items (
-      id,
-      menu_item_id,
-      quantity,
-      price,
-      notes,
-      status,
-      menu_items ( name )
-    )
-  `)
-  .order('created_at', { ascending: false });
-
+      .from('orders')
+      .select(`
+        *,
+        tables ( name ),
+        users ( username ),
+        order_items (
+          id,
+          menu_item_id,
+          quantity,
+          price,
+          notes,
+          status,
+          menu_items ( name )
+        )
+      `)
+      .order('created_at', { ascending: false });
 
     const { data: tablesData } = await supabase
       .from('tables')
@@ -326,7 +322,6 @@ const Orders = () => {
 
   // Insert helper con fallback (sin total_amount) si tu BD no tiene esa columna
   const insertOrderWithFallback = async (payload) => {
-    // primer intento, con total_amount
     let { data, error } = await supabase
       .from('orders')
       .insert(payload)
@@ -447,7 +442,6 @@ const Orders = () => {
       status: order.status,
       items: (order.order_items || []).map((item) => ({
         id: item.id,
-        // si en tu SELECT no traes menu_item_id, ajusta esto a tu esquema
         menu_item_id: item.menu_item_id || null,
         quantity: item.quantity,
         notes: item.notes,
@@ -551,7 +545,7 @@ const Orders = () => {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.5, delay: index * 0.05 }}
-                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duración-300"
+                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duration-300"
               >
                 <div>
                   <div className="flex items-center justify-between mb-3">
@@ -591,7 +585,7 @@ const Orders = () => {
                     onClick={() => openEditModal(order)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duración-200"
+                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duration-200"
                     title="Editar Orden"
                   >
                     <Edit className="w-5 h-5" />
@@ -600,7 +594,7 @@ const Orders = () => {
                     onClick={() => handleDeleteOrder(order.id)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duración-200"
+                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200"
                     title="Eliminar Orden"
                   >
                     <Trash2 className="w-5 h-5" />
@@ -611,6 +605,173 @@ const Orders = () => {
           )}
         </AnimatePresence>
       </div>
+
+      {/* ===== Modal: Crear / Editar Orden ===== */}
+      <AnimatePresence>
+        {isModalOpen && (
+          <motion.div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-lg relative"
+              initial={{ opacity: 0, y: 50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 50 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            >
+              <button onClick={closeModal} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+                <XCircle className="w-6 h-6" />
+              </button>
+              <h3 className="text-2xl font-bold text-gray-800 mb-6">
+                {currentOrder ? 'Editar Orden' : 'Crear Nueva Orden'}
+              </h3>
+
+              <form onSubmit={handleAddEditOrder} className="space-y-5">
+                <div>
+                  <label htmlFor="table_id" className="block text-gray-700 text-sm font-medium mb-2">
+                    Mesa
+                  </label>
+                  <select
+                    id="table_id"
+                    name="table_id"
+                    value={formData.table_id}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    required
+                  >
+                    <option value="">Selecciona una mesa</option>
+                    {tables.map((table) => (
+                      <option key={table.id} value={table.id}>
+                        {table.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="status" className="block text-gray-700 text-sm font-medium mb-2">
+                    Estado de la Orden
+                  </label>
+                  <select
+                    id="status"
+                    name="status"
+                    value={formData.status}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    required
+                  >
+                    <option value="preparing">Preparando</option>
+                    <option value="pending">Pendiente</option>
+                    <option value="ready">Lista</option>
+                    <option value="served">Servida</option>
+                    <option value="paid">Pagada</option>
+                    <option value="cancelled">Cancelada</option>
+                  </select>
+                </div>
+
+                <h4 className="text-lg font-bold text-gray-800 mt-6 mb-3">Ítems de la orden</h4>
+
+                {formData.items.map((item, index) => (
+                  <div key={index} className="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg">
+                    <div className="flex-grow">
+                      <label
+                        htmlFor={`menu_item_id-${index}`}
+                        className="block text-gray-700 text-xs font-medium mb-1"
+                      >
+                        Plato
+                      </label>
+                      <select
+                        id={`menu_item_id-${index}`}
+                        name="menu_item_id"
+                        value={item.menu_item_id}
+                        onChange={(e) => handleItemChange(index, e)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        required
+                      >
+                        <option value="">Selecciona un plato</option>
+                        {menuItems.map((menuItem) => (
+                          <option key={menuItem.id} value={menuItem.id}>
+                            {menuItem.name} (${menuItem.price.toFixed(2)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="w-20">
+                      <label htmlFor={`quantity-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
+                        Cant.
+                      </label>
+                      <input
+                        type="number"
+                        id={`quantity-${index}`}
+                        name="quantity"
+                        value={item.quantity}
+                        onChange={(e) => handleItemChange(index, e)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        min="1"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex-grow">
+                      <label htmlFor={`notes-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
+                        Notas (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        id={`notes-${index}`}
+                        name="notes"
+                        value={item.notes}
+                        onChange={(e) => handleItemChange(index, e)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        placeholder="Sin cebolla, extra picante…"
+                      />
+                    </div>
+
+                    <motion.button
+                      type="button"
+                      onClick={() => handleRemoveItem(index)}
+                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200 mt-auto"
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </motion.button>
+                  </div>
+                ))}
+
+                <motion.button
+                  type="button"
+                  onClick={handleAddItem}
+                  className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors duration-200 flex items-center justify-center space-x-2 mt-2"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  <PlusCircle className="w-5 h-5" />
+                  <span>Añadir plato</span>
+                </motion.button>
+
+                <p className="text-xl font-bold text-gray-800 mt-4">
+                  Total de la orden: ${calculateTotalAmount().toFixed(2)}
+                </p>
+
+                <motion.button
+                  type="submit"
+                  className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center mt-4"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  disabled={loading}
+                >
+                  {loading ? 'Guardando…' : currentOrder ? 'Guardar cambios' : 'Crear orden'}
+                </motion.button>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* ===== Modal: Imprimir Orden en cocina ===== */}
       <AnimatePresence>
@@ -641,7 +802,8 @@ const Orders = () => {
               </div>
 
               <p className="text-gray-600 mb-6">
-                ¿Deseas imprimir el ticket de la orden <strong>#{printOrder ? String(printOrder.id).slice(0, 8) : ''}</strong> para cocina?
+                ¿Deseas imprimir el ticket de la orden{' '}
+                <strong>#{printOrder ? String(printOrder.id).slice(0, 8) : ''}</strong> para cocina?
               </p>
 
               <div className="flex justify-end gap-3">
@@ -672,5 +834,6 @@ const Orders = () => {
 };
 
 export default Orders;
+
 
 
