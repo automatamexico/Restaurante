@@ -230,16 +230,23 @@ const Orders = () => {
     setLoading(true);
 
     const { data: ordersData } = await supabase
-      .from('orders')
-      .select(
-        `
-        *,
-        tables ( name ),
-        users ( username ),
-        order_items ( id, quantity, price, notes, status, menu_items ( name ) )
-      `
-      )
-      .order('created_at', { ascending: false });
+  .from('orders')
+  .select(`
+    *,
+    tables ( name ),
+    users ( username ),
+    order_items (
+      id,
+      menu_item_id,
+      quantity,
+      price,
+      notes,
+      status,
+      menu_items ( name )
+    )
+  `)
+  .order('created_at', { ascending: false });
+
 
     const { data: tablesData } = await supabase
       .from('tables')
