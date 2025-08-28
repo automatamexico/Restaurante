@@ -20,14 +20,13 @@ import LoadingSpinner from '../components/LoadingSpinner';
    Ticket HTML (58mm, ancho imprimible 48mm) 
    =========================== */
 const printKitchenTicket = (order) => {
-  const LOGO_URL =
-    'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_color.png';
+  const LOGO_URL = '/logo_384.png'; // sube tu archivo optimizado a /public o usa una URL absoluta
 
   const createdAt = new Date(order.created_at);
   const tableName = order.tables?.name || 'N/A';
   const waiter = order.users?.username || 'N/A';
-
   const items = order.order_items || [];
+
   const itemsHTML =
     items.length > 0
       ? items
@@ -289,111 +288,142 @@ const Orders = () => {
   const calculateTotalAmount = () => {
     return formData.items.reduce((total, item) => {
       const mi = menuItems.find((x) => x.id === item.menu_item_id);
-      return total + (mi ? mi.price * parseInt(item.quantity || 0) : 0);
+      const qty = Number(item.quantity || 0);
+      return total + (mi ? mi.price * qty : 0);
     }, 0);
   };
 
-  // Crear/editar orden:
-  // - En creación: status = 'preparing'
-  // - Tras crear: mostrar modal "Imprimir Orden en cocina"
+  // Validación fuerte del formulario
+  const validateForm = () => {
+    if (!formData.table_id) {
+      setError('Selecciona una mesa.');
+      return false;
+    }
+    if (!formData.items.length) {
+      setError('Agrega al menos 1 ítem a la orden.');
+      return false;
+    }
+    for (const it of formData.items) {
+      if (!it.menu_item_id) {
+        setError('Hay un ítem sin seleccionar (plato).');
+        return false;
+      }
+      const qty = Number(it.quantity);
+      if (!Number.isFinite(qty) || qty < 1) {
+        setError('Todas las cantidades deben ser números ≥ 1.');
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Insert helper con fallback (sin total_amount) si tu BD no tiene esa columna
+  const insertOrderWithFallback = async (payload) => {
+    // primer intento, con total_amount
+    let { data, error } = await supabase
+      .from('orders')
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error && /total_amount/i.test(error.message)) {
+      const { total_amount, ...withoutTotal } = payload;
+      ({ data, error } = await supabase.from('orders').insert(withoutTotal).select().single());
+    }
+    return { data, error };
+  };
+
+  // Crear/editar orden
   const handleAddEditOrder = async (e) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+    if (!validateForm()) return;
 
-    let orderError = null;
+    setLoading(true);
     let newOrderData = null;
 
-    const profileId = await getOrCreateProfileId();
-    if (!currentOrder && !profileId) {
-      setError('No se pudo crear/obtener el perfil del usuario.');
-      setLoading(false);
-      return;
-    }
+    try {
+      const profileId = await getOrCreateProfileId();
+      if (!currentOrder && !profileId) {
+        throw new Error('No se pudo crear/obtener el perfil del usuario.');
+      }
 
-    const totalAmount = calculateTotalAmount();
-    const orderToSave = {
-      table_id: formData.table_id,
-      user_id: currentOrder ? formData.user_id || profileId : profileId,
-      status: currentOrder ? formData.status : 'preparing',
-      total_amount: totalAmount,
-    };
+      const totalAmount = calculateTotalAmount();
+      const orderToSave = {
+        table_id: formData.table_id,
+        user_id: currentOrder ? formData.user_id || profileId : profileId,
+        status: currentOrder ? formData.status : 'preparing',
+        total_amount: totalAmount,
+      };
 
-    if (currentOrder) {
-      const { error: updateOrderError } = await supabase
-        .from('orders')
-        .update(orderToSave)
-        .eq('id', currentOrder.id);
-      orderError = updateOrderError;
-      newOrderData = currentOrder;
-    } else {
-      const { data, error: insertOrderError } = await supabase
-        .from('orders')
-        .insert(orderToSave)
-        .select()
-        .single();
-      orderError = insertOrderError;
-      newOrderData = data;
-    }
-
-    if (!orderError && newOrderData) {
       if (currentOrder) {
+        const { error: updateOrderError } = await supabase
+          .from('orders')
+          .update(orderToSave)
+          .eq('id', currentOrder.id);
+        if (updateOrderError) throw updateOrderError;
+        newOrderData = currentOrder;
+
+        // reemplazar ítems
         const { error: delErr } = await supabase
           .from('order_items')
           .delete()
           .eq('order_id', newOrderData.id);
-        if (delErr) orderError = delErr;
+        if (delErr) throw delErr;
+      } else {
+        const { data, error: insertOrderError } = await insertOrderWithFallback(orderToSave);
+        if (insertOrderError) throw insertOrderError;
+        newOrderData = data;
       }
 
-      if (!orderError) {
-        const itemsToInsert = formData.items.map((it) => {
-          const mi = menuItems.find((x) => x.id === it.menu_item_id);
-          return {
-            order_id: newOrderData.id,
-            menu_item_id: it.menu_item_id,
-            quantity: parseInt(it.quantity),
-            price: mi ? mi.price : 0,
-            notes: it.notes,
-          };
-        });
-        const { error: insItemsErr } = await supabase
-          .from('order_items')
-          .insert(itemsToInsert);
-        if (insItemsErr) orderError = insItemsErr;
+      // Insertar ítems
+      const itemsToInsert = formData.items.map((it) => {
+        const mi = menuItems.find((x) => x.id === it.menu_item_id);
+        return {
+          order_id: newOrderData.id,
+          menu_item_id: it.menu_item_id,
+          quantity: Number(it.quantity),
+          price: mi ? Number(mi.price) : 0,
+          notes: it.notes || null,
+        };
+      });
+
+      if (itemsToInsert.length) {
+        const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
+        if (insItemsErr) throw insItemsErr;
       }
-    }
 
-    if (orderError) {
-      setError(`¡Ups! No pude guardar la orden. Error: ${orderError.message}`);
-      setLoading(false);
-      return;
-    }
-
-    // Si es NUEVA orden, mostramos modal para imprimir
-    if (!currentOrder) {
-      try {
+      // Si es NUEVA orden, preguntar si imprime
+      if (!currentOrder) {
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
         setPrintOrder(fullOrder);
         setPrintPromptOpen(true);
-      } catch (printErr) {
-        console.warn('No pude preparar el ticket:', printErr);
       }
-    }
 
-    await fetchData();
-    setIsModalOpen(false);
-    setCurrentOrder(null);
-    setFormData({ table_id: '', user_id: '', status: 'preparing', items: [] });
-    setLoading(false);
+      await fetchData();
+      setIsModalOpen(false);
+      setCurrentOrder(null);
+      setFormData({ table_id: '', user_id: '', status: 'preparing', items: [] });
+    } catch (err) {
+      console.error('[Orders] Error al guardar:', err);
+      setError('No pude guardar la orden: ' + (err?.message || err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleDeleteOrder = async (id) => {
     if (!window.confirm('¿Eliminar esta orden?')) return;
     setLoading(true);
-    const { error } = await supabase.from('orders').delete().eq('id', id);
-    if (error) setError('No pude borrar la orden.');
-    else fetchData();
-    setLoading(false);
+    try {
+      const { error } = await supabase.from('orders').delete().eq('id', id);
+      if (error) throw error;
+      await fetchData();
+    } catch (err) {
+      setError('No pude borrar la orden: ' + (err?.message || err));
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openAddModal = () => {
@@ -410,7 +440,8 @@ const Orders = () => {
       status: order.status,
       items: (order.order_items || []).map((item) => ({
         id: item.id,
-        menu_item_id: item.menu_item_id,
+        // si en tu SELECT no traes menu_item_id, ajusta esto a tu esquema
+        menu_item_id: item.menu_item_id || null,
         quantity: item.quantity,
         notes: item.notes,
       })),
@@ -513,7 +544,7 @@ const Orders = () => {
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.9 }}
                 transition={{ duration: 0.5, delay: index * 0.05 }}
-                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duration-300"
+                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duración-300"
               >
                 <div>
                   <div className="flex items-center justify-between mb-3">
@@ -553,7 +584,7 @@ const Orders = () => {
                     onClick={() => openEditModal(order)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duration-200"
+                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duración-200"
                     title="Editar Orden"
                   >
                     <Edit className="w-5 h-5" />
@@ -562,7 +593,7 @@ const Orders = () => {
                     onClick={() => handleDeleteOrder(order.id)}
                     whileHover={{ scale: 1.1 }}
                     whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200"
+                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duración-200"
                     title="Eliminar Orden"
                   >
                     <Trash2 className="w-5 h-5" />
@@ -634,4 +665,5 @@ const Orders = () => {
 };
 
 export default Orders;
+
 
