@@ -1,6 +1,15 @@
+// src/pages/Kitchen.jsx
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { CookingPot, CheckCircle, XCircle, Clock, UtensilsCrossed, ChefHat, Table } from 'lucide-react';
+import {
+  CookingPot,
+  CheckCircle,
+  XCircle,
+  Clock,
+  UtensilsCrossed,
+  ChefHat,
+  Table,
+} from 'lucide-react';
 import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
@@ -22,19 +31,13 @@ const Kitchen = () => {
         order_items (
           quantity,
           notes,
-          menu_items (
-            name
-          ),
+          menu_items ( name ),
           orders (
             table_id,
-            tables (
-              name
-            )
+            tables ( name )
           )
         ),
-        users (
-          username
-        )
+        users ( username )
       `)
       .order('created_at', { ascending: true });
 
@@ -42,7 +45,7 @@ const Kitchen = () => {
       console.error('Error fetching kitchen orders:', error);
       setError('No pude traer las órdenes de la cocina. ¿Se perdieron en el fuego?');
     } else {
-      setKitchenOrders(data);
+      setKitchenOrders(data || []);
     }
     setLoading(false);
   };
@@ -57,26 +60,32 @@ const Kitchen = () => {
     if (error) {
       console.error('Error updating order status:', error);
       setError(`No pude actualizar el estado de la orden. Error: ${error.message}`);
-    } else {
-      fetchKitchenOrders();
+      setLoading(false);
+      return;
     }
+
+    await fetchKitchenOrders();
     setLoading(false);
   };
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'pending': return 'bg-yellow-100 text-yellow-800';
-      case 'in_progress': return 'bg-blue-100 text-blue-800';
-      case 'ready': return 'bg-green-100 text-green-800';
-      case 'delivered': return 'bg-gray-100 text-gray-800';
-      case 'cancelled': return 'bg-red-100 text-red-800';
-      default: return 'bg-gray-100 text-gray-800';
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'in_progress':
+        return 'bg-blue-100 text-blue-800';
+      case 'ready':
+        return 'bg-green-100 text-green-800';
+      case 'delivered':
+        return 'bg-gray-100 text-gray-800';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
     }
   };
 
-  if (loading) {
-    return <LoadingSpinner />;
-  }
+  if (loading) return <LoadingSpinner />;
 
   return (
     <div className="space-y-8">
@@ -96,7 +105,10 @@ const Kitchen = () => {
           animate={{ opacity: 1, y: 0 }}
         >
           <span className="block sm:inline">{error}</span>
-          <span className="absolute top-0 bottom-0 right-0 px-4 py-3" onClick={() => setError(null)}>
+          <span
+            className="absolute top-0 bottom-0 right-0 px-4 py-3"
+            onClick={() => setError(null)}
+          >
             <XCircle className="w-5 h-5 cursor-pointer" />
           </span>
         </motion.div>
@@ -111,7 +123,9 @@ const Kitchen = () => {
               animate={{ opacity: 1 }}
             >
               <CookingPot className="w-24 h-24 text-gray-400 mx-auto mb-6" />
-              <p className="text-xl font-semibold">¡La cocina está tranquila! No hay órdenes pendientes.</p>
+              <p className="text-xl font-semibold">
+                ¡La cocina está tranquila! No hay órdenes pendientes.
+              </p>
               <p className="text-gray-500">Es un buen momento para un café... o para limpiar.</p>
             </motion.div>
           ) : (
@@ -129,31 +143,41 @@ const Kitchen = () => {
                     <h3 className="text-xl font-bold text-gray-800">
                       {order.order_items?.menu_items?.name} (x{order.order_items?.quantity})
                     </h3>
-                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(order.status)}`}>
+                    <span
+                      className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(
+                        order.status
+                      )}`}
+                    >
                       {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
                     </span>
                   </div>
+
                   <p className="text-gray-600 mb-2 flex items-center">
                     <Table className="w-4 h-4 mr-2 text-gray-500" />
                     Mesa: {order.order_items?.orders?.tables?.name || 'N/A'}
                   </p>
+
                   {order.order_items?.notes && (
                     <p className="text-gray-600 text-sm mb-2 flex items-center">
                       <UtensilsCrossed className="w-4 h-4 mr-2 text-gray-500" />
                       Notas: {order.order_items.notes}
                     </p>
                   )}
+
                   {order.chef_id && (
                     <p className="text-gray-600 text-sm mb-2 flex items-center">
                       <ChefHat className="w-4 h-4 mr-2 text-gray-500" />
                       Chef: {order.users?.username || 'Asignado'}
                     </p>
                   )}
+
                   <p className="text-gray-500 text-xs flex items-center">
                     <Clock className="w-3 h-3 mr-1" />
                     Pedido: {new Date(order.created_at).toLocaleTimeString()}
                   </p>
                 </div>
+
+                {/* Acciones */}
                 <div className="flex justify-end space-x-3 mt-4">
                   {order.status === 'pending' && (
                     <motion.button
@@ -166,6 +190,7 @@ const Kitchen = () => {
                       <CookingPot className="w-5 h-5" />
                     </motion.button>
                   )}
+
                   {order.status === 'in_progress' && (
                     <motion.button
                       onClick={() => updateOrderStatus(order.id, 'ready')}
@@ -177,6 +202,20 @@ const Kitchen = () => {
                       <CheckCircle className="w-5 h-5" />
                     </motion.button>
                   )}
+
+                  {/* NUEVO: botón para marcar como ENTREGADO cuando ya está 'ready' */}
+                  {order.status === 'ready' && (
+                    <motion.button
+                      onClick={() => updateOrderStatus(order.id, 'delivered')}
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      className="p-2 rounded-full bg-teal-100 text-teal-600 hover:bg-teal-200 transition-colors duration-200"
+                      title="Marcar como Entregado"
+                    >
+                      <UtensilsCrossed className="w-5 h-5" />
+                    </motion.button>
+                  )}
+
                   {(order.status === 'pending' || order.status === 'in_progress') && (
                     <motion.button
                       onClick={() => updateOrderStatus(order.id, 'cancelled')}
