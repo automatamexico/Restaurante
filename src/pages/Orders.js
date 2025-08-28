@@ -1,6 +1,6 @@
 /* global qz */
 /* eslint-disable no-undef */
-// src/pages/Orders.jsx
+// src/pages/Orders.js
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -17,35 +17,24 @@ import {
 import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-/** ===== QZ TRAY (impresión silenciosa) =====
- * Requiere QZ Tray corriendo en la máquina con la impresora.
- * Para DEV rápido: en QZ Tray habilita "Allow unsigned requests" (o usa tu certificado/firmado).
- */
-
-// Opcional: si tienes certificado propio, colócalo aquí y configura la firma.
-// Para DEV (sin certificado), deja las Promises devolviendo null/resolve.
-// QZ Tray debe permitir "unsigned" para aceptar la conexión.
+/** ===== QZ TRAY (impresión silenciosa) ===== */
 const setupQZSecurity = () => {
   if (!window.qz?.security) return;
-  qz.security.setCertificatePromise((resolve, reject) => {
-    // DEV: dejar vacío. Producción: devuelve tu CERT PEM.
-    resolve(null);
+  qz.security.setCertificatePromise((resolve) => {
+    resolve(null); // DEV: sin certificado; en PROD devuelve tu cert PEM
   });
-
-  qz.security.setSignaturePromise((toSign) => {
-    // DEV: sin firma (null). Producción: firmar "toSign" en tu backend y devolver la firma.
-    return Promise.resolve(null);
+  qz.security.setSignaturePromise(() => {
+    return Promise.resolve(null); // DEV: sin firma; en PROD firma en backend
   });
 };
 
 const ensureQZ = async () => {
-  if (!window.qz) throw new Error('QZ Tray no encontrado. Asegúrate de cargar qz-tray.js en index.html');
+  if (!window.qz) throw new Error('QZ Tray no encontrado');
   if (qz.websocket.isActive()) return;
   setupQZSecurity();
-  await qz.websocket.connect(); // conecta al QZ Tray local
+  await qz.websocket.connect();
 };
 
-/** Encuentra impresora por nombre (si lo pasas) o usa la predeterminada */
 const getPrinterName = async (preferred) => {
   if (preferred) {
     const list = await qz.printers.find();
@@ -55,18 +44,15 @@ const getPrinterName = async (preferred) => {
   return await qz.printers.getDefault();
 };
 
-/** ESC/POS helpers */
 const esc = (hex) => ({ type: 'raw', format: 'hex', data: hex.replace(/\s+/g, '') });
 const txt = (str) => ({ type: 'raw', format: 'plain', data: str });
 
-/** Formateo de líneas para 58mm (≈32 columnas con fuente A) */
 const colLine = (left, right, width = 32) => {
   const l = (left || '').toString();
   const r = (right || '').toString();
   const space = Math.max(1, width - l.length - r.length);
   return l.slice(0, width) + ' '.repeat(space) + r.slice(0, width);
 };
-
 const wrapText = (text, width = 32) => {
   const out = [];
   let s = (text || '').toString();
@@ -78,13 +64,12 @@ const wrapText = (text, width = 32) => {
   return out;
 };
 
-/** Construye y envía ESC/POS a la impresora (silencioso) */
 const printKitchenViaQZ = async (order, { printerHint = 'XP' } = {}) => {
   await ensureQZ();
   const printer = await getPrinterName(printerHint);
   const cfg = qz.configs.create(printer, {
-    encoding: 'CP437',     // español básico; ajusta si tu impresora usa otro codepage
-    rasterize: false,      // enviamos ESC/POS crudo
+    encoding: 'CP437',
+    rasterize: false,
     colorType: 'blackwhite',
     margins: 0,
     copies: 1,
@@ -95,44 +80,26 @@ const printKitchenViaQZ = async (order, { printerHint = 'XP' } = {}) => {
   const mesa = order.tables?.name || 'N/A';
   const mesero = order.users?.username || 'N/A';
   const items = order.order_items || [];
+  const total = items.reduce((sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0), 0);
 
-  // Calcula total
-  const total = items.reduce(
-    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
-    0
-  );
-
-  // Arma líneas de ítems
   const itemLines = [];
   items.forEach((it) => {
     const name = it.menu_items?.name || 'Ítem';
     const qty = String(it.quantity || 0);
     const price = '$' + Number(it.price || 0).toFixed(2);
-
-    // Nombre puede ocupar varias líneas
-    const nameWrapped = wrapText(name, 22); // deja espacio para qty+price
-    // Primera línea: nombre + qty/price
+    const nameWrapped = wrapText(name, 22);
     itemLines.push(colLine(nameWrapped[0], `${qty} x ${price}`, 32));
-    // Resto de líneas: nombre continuo
     for (let i = 1; i < nameWrapped.length; i++) itemLines.push(nameWrapped[i]);
-
-    // Notas (si hay)
-    if (it.notes) {
-      wrapText('Notas: ' + it.notes, 32).forEach((l) => itemLines.push(l));
-    }
+    if (it.notes) wrapText('Notas: ' + it.notes, 32).forEach((l) => itemLines.push(l));
   });
 
-  // Comandos ESC/POS
   const data = [
-    esc('1B40'),            // init
-    esc('1B7400'),          // codepage CP437
-    esc('1B6101'),          // center
-    esc('1D2111'),          // doble ancho+alto
+    esc('1B40'), esc('1B7400'),
+    esc('1B6101'), esc('1D2111'),
     txt('ORDEN COCINA\n'),
-    esc('1D2100'),          // normal
-    txt(`#${String(order.id).slice(0, 8)}  ${createdAt.toLocaleString('es-MX')}\n`),
-    txt('\n'),
-    esc('1B6100'),          // left
+    esc('1D2100'),
+    txt(`#${String(order.id).slice(0, 8)}  ${createdAt.toLocaleString('es-MX')}\n\n`),
+    esc('1B6100'),
     txt(`Mesa: ${mesa}\n`),
     txt(`Mesero: ${mesero}\n`),
     txt(`Estado: ${order.status}\n`),
@@ -141,18 +108,14 @@ const printKitchenViaQZ = async (order, { printerHint = 'XP' } = {}) => {
     txt('--------------------------------\n'),
     ...itemLines.map((l) => txt(l + '\n')),
     txt('--------------------------------\n'),
-    txt(colLine('TOTAL', '$' + total.toFixed(2)) + '\n'),
-    txt('\n\n'),
-    // Alimenta y corte (si soporta)
-    esc('1B6403'),          // feed 3
-    esc('1D5601'),          // cut parcial (algunas 58mm lo ignoran si no hay cutter)
+    txt(colLine('TOTAL', '$' + total.toFixed(2)) + '\n\n'),
+    esc('1B6403'), esc('1D5601'),
   ];
 
   await qz.print(cfg, data);
 };
 
 /** ===== LÓGICA DE ÓRDENES ===== */
-
 const getOrCreateProfileId = async () => {
   let profileId = localStorage.getItem('user_id');
   if (profileId) return profileId;
@@ -225,13 +188,10 @@ const Orders = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
     setLoading(true);
-
     const { data: ordersData } = await supabase
       .from('orders')
       .select(
@@ -295,10 +255,6 @@ const Orders = () => {
     }, 0);
   };
 
-  /** Crear/editar orden:
-   *  - En creación: status = 'preparing'
-   *  - Tras crear: impresión silenciosa via QZ (ESC/POS)
-   */
   const handleAddEditOrder = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -318,7 +274,7 @@ const Orders = () => {
     const orderToSave = {
       table_id: formData.table_id,
       user_id: currentOrder ? formData.user_id || profileId : profileId,
-      status: currentOrder ? formData.status : 'preparing', // forzamos "preparing" al crear
+      status: currentOrder ? formData.status : 'preparing',
       total_amount: totalAmount,
     };
 
@@ -340,7 +296,6 @@ const Orders = () => {
     }
 
     if (!orderError && newOrderData) {
-      // Si editamos, reemplazamos ítems
       if (currentOrder) {
         const { error: delErr } = await supabase
           .from('order_items')
@@ -373,11 +328,11 @@ const Orders = () => {
       return;
     }
 
-    // 🔇 Impresión silenciosa tras crear (no al editar)
+    // Imprime silencioso solo cuando es NUEVA orden
     if (!currentOrder) {
       try {
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
-        await printKitchenViaQZ(fullOrder, { printerHint: 'XP' }); // busca impresora que contenga "XP" o usa la predeterminada
+        await printKitchenViaQZ(fullOrder, { printerHint: 'XP' });
       } catch (printErr) {
         console.warn('No se pudo imprimir el ticket (QZ):', printErr);
       }
@@ -479,6 +434,274 @@ const Orders = () => {
           <input
             type="text"
             placeholder="Buscar órdenes por mesa, mesero o estado..."
-            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-i
+            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+          />
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+        </div>
+        <motion.button
+          onClick={openAddModal}
+          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          <PlusCircle className="w-5 h-5" />
+          <span>Crear Nueva Orden</span>
+        </motion.button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <AnimatePresence>
+          {filteredOrders.length === 0 ? (
+            <motion.div
+              className="col-span-full text-center py-10 text-gray-600 bg-white rounded-2xl shadow-xl p-8"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+            >
+              <ChefHat className="w-24 h-24 text-gray-400 mx-auto mb-6" />
+              <p className="text-xl font-semibold">¡No hay órdenes para mostrar!</p>
+              <p className="text-gray-500">Es un buen momento para tomar un descanso... o para conseguir más clientes.</p>
+            </motion.div>
+          ) : (
+            filteredOrders.map((order, index) => (
+              <motion.div
+                key={order.id}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                transition={{ duration: 0.5, delay: index * 0.05 }}
+                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duration-300"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xl font-bold text-gray-800">
+                      Orden #{String(order.id).substring(0, 8)}
+                    </h3>
+                    <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(order.status)}`}>
+                      {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+                    </span>
+                  </div>
+                  <p className="text-gray-600 mb-2 flex items-center">
+                    <Table className="w-4 h-4 mr-2 text-gray-500" />
+                    Mesa: {order.tables?.name || 'N/A'}
+                  </p>
+                  <p className="text-gray-600 mb-2 flex items-center">
+                    <User className="w-4 h-4 mr-2 text-gray-500" />
+                    Mesero: {order.users?.username || 'N/A'}
+                  </p>
+                  <ul className="list-disc list-inside text-gray-700 text-sm mb-4">
+                    {(order.order_items || []).map((item) => (
+                      <li key={item.id}>
+                        {item.menu_items?.name} (x{item.quantity}) - ${Number(item.price || 0).toFixed(2)}
+                        {item.notes && <span className="text-gray-500 italic"> ({item.notes})</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-xl font-bold text-green-600 flex items-center">
+                    <DollarSign className="w-5 h-5 mr-1" />
+                    Total: $
+                    {(order.order_items || [])
+                      .reduce((t, it) => t + Number(it.price || 0) * Number(it.quantity || 0), 0)
+                      .toFixed(2)}
+                  </p>
+                </div>
+                <div className="flex justify-end space-x-3 mt-4">
+                  <motion.button
+                    onClick={() => openEditModal(order)}
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duration-200"
+                    title="Editar Orden"
+                  >
+                    <Edit className="w-5 h-5" />
+                  </motion.button>
+                  <motion.button
+                    onClick={() => handleDeleteOrder(order.id)}
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duración-200"
+                    title="Eliminar Orden"
+                  >
+                    <Trash2 className="w-5 h-5" />
+                  </motion.button>
+                </div>
+              </motion.div>
+            ))
+          )}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence>
+        {isModalOpen && (
+          <motion.div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-lg relative"
+              initial={{ opacity: 0, y: 50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 50 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            >
+              <button onClick={closeModal} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600">
+                <XCircle className="w-6 h-6" />
+              </button>
+
+              <h3 className="text-2xl font-bold text-gray-800 mb-6">
+                {currentOrder ? 'Editar Orden' : 'Crear Nueva Orden'}
+              </h3>
+
+              <form onSubmit={handleAddEditOrder} className="space-y-5">
+                <div>
+                  <label htmlFor="table_id" className="block text-gray-700 text-sm font-medium mb-2">
+                    Mesa
+                  </label>
+                  <select
+                    id="table_id"
+                    name="table_id"
+                    value={formData.table_id}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    required
+                  >
+                    <option value="">Selecciona una mesa</option>
+                    {tables.map((table) => (
+                      <option key={table.id} value={table.id}>
+                        {table.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label htmlFor="status" className="block text-gray-700 text-sm font-medium mb-2">
+                    Estado de la Orden
+                  </label>
+                  <select
+                    id="status"
+                    name="status"
+                    value={formData.status}
+                    onChange={handleInputChange}
+                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    disabled={!currentOrder}
+                    required
+                  >
+                    <option value="pending">Pendiente</option>
+                    <option value="preparing">Preparando</option>
+                    <option value="ready">Lista</option>
+                    <option value="served">Servida</option>
+                    <option value="paid">Pagada</option>
+                    <option value="cancelled">Cancelada</option>
+                  </select>
+                  {!currentOrder && (
+                    <p className="text-xs text-gray-500 mt-1">
+                      Al crear, el estado se fija automáticamente en <strong>Preparando</strong>.
+                    </p>
+                  )}
+                </div>
+
+                <h4 className="text-lg font-bold text-gray-800 mt-6 mb-3">Items de la Orden</h4>
+                {formData.items.map((item, index) => (
+                  <div key={index} className="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg">
+                    <div className="flex-grow">
+                      <label htmlFor={`menu_item_id-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
+                        Plato
+                      </label>
+                      <select
+                        id={`menu_item_id-${index}`}
+                        name="menu_item_id"
+                        value={item.menu_item_id}
+                        onChange={(e) => handleItemChange(index, e)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        required
+                      >
+                        <option value="">Selecciona un plato</option>
+                        {menuItems.map((menuItem) => (
+                          <option key={menuItem.id} value={menuItem.id}>
+                            {menuItem.name} (${Number(menuItem.price || 0).toFixed(2)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="w-20">
+                      <label htmlFor={`quantity-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
+                        Cant.
+                      </label>
+                      <input
+                        type="number"
+                        id={`quantity-${index}`}
+                        name="quantity"
+                        value={item.quantity}
+                        onChange={(e) => handleItemChange(index, e)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        min="1"
+                        required
+                      />
+                    </div>
+
+                    <div className="flex-grow">
+                      <label htmlFor={`notes-${index}`} className="block text-gray-700 text-xs font-medium mb-1">
+                        Notas (Opcional)
+                      </label>
+                      <input
+                        type="text"
+                        id={`notes-${index}`}
+                        name="notes"
+                        value={item.notes}
+                        onChange={(e) => handleItemChange(index, e)}
+                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
+                        placeholder="Sin cebolla, extra picante..."
+                      />
+                    </div>
+
+                    <motion.button
+                      type="button"
+                      onClick={() => handleRemoveItem(index)}
+                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200 mt-auto"
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </motion.button>
+                  </div>
+                ))}
+
+                <motion.button
+                  type="button"
+                  onClick={handleAddItem}
+                  className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors duration-200 flex items-center justify-center space-x-2 mt-4"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  <PlusCircle className="w-5 h-5" />
+                  <span>Añadir Plato</span>
+                </motion.button>
+
+                <p className="text-xl font-bold text-gray-800 mt-6">
+                  Total de la Orden: ${calculateTotalAmount().toFixed(2)}
+                </p>
+
+                <motion.button
+                  type="submit"
+                  className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duración-200 flex items-center justify-center mt-6 disabled:opacity-60"
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  disabled={loading}
+                >
+                  {loading ? <LoadingSpinner /> : currentOrder ? 'Guardar Cambios' : 'Crear Orden'}
+                </motion.button>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 export default Orders;
