@@ -1,3 +1,4 @@
+/* global qz */
 // src/pages/Orders.jsx
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -15,13 +16,147 @@ import {
 import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
-/** Helper: obtener/crear profile_id (mesero actual) */
+/** ===== QZ TRAY (impresión silenciosa) =====
+ * Requiere QZ Tray corriendo en la máquina con la impresora.
+ * Para DEV rápido: en QZ Tray habilita "Allow unsigned requests" (o usa tu certificado/firmado).
+ */
+
+// Opcional: si tienes certificado propio, colócalo aquí y configura la firma.
+// Para DEV (sin certificado), deja las Promises devolviendo null/resolve.
+// QZ Tray debe permitir "unsigned" para aceptar la conexión.
+const setupQZSecurity = () => {
+  if (!window.qz?.security) return;
+  qz.security.setCertificatePromise((resolve, reject) => {
+    // DEV: dejar vacío. Producción: devuelve tu CERT PEM.
+    resolve(null);
+  });
+
+  qz.security.setSignaturePromise((toSign) => {
+    // DEV: sin firma (null). Producción: firmar "toSign" en tu backend y devolver la firma.
+    return Promise.resolve(null);
+  });
+};
+
+const ensureQZ = async () => {
+  if (!window.qz) throw new Error('QZ Tray no encontrado. Asegúrate de cargar qz-tray.js en index.html');
+  if (qz.websocket.isActive()) return;
+  setupQZSecurity();
+  await qz.websocket.connect(); // conecta al QZ Tray local
+};
+
+/** Encuentra impresora por nombre (si lo pasas) o usa la predeterminada */
+const getPrinterName = async (preferred) => {
+  if (preferred) {
+    const list = await qz.printers.find();
+    const found = list.find((p) => p.toLowerCase().includes(preferred.toLowerCase()));
+    if (found) return found;
+  }
+  return await qz.printers.getDefault();
+};
+
+/** ESC/POS helpers */
+const esc = (hex) => ({ type: 'raw', format: 'hex', data: hex.replace(/\s+/g, '') });
+const txt = (str) => ({ type: 'raw', format: 'plain', data: str });
+
+/** Formateo de líneas para 58mm (≈32 columnas con fuente A) */
+const colLine = (left, right, width = 32) => {
+  const l = (left || '').toString();
+  const r = (right || '').toString();
+  const space = Math.max(1, width - l.length - r.length);
+  return l.slice(0, width) + ' '.repeat(space) + r.slice(0, width);
+};
+
+const wrapText = (text, width = 32) => {
+  const out = [];
+  let s = (text || '').toString();
+  while (s.length > width) {
+    out.push(s.slice(0, width));
+    s = s.slice(width);
+  }
+  out.push(s);
+  return out;
+};
+
+/** Construye y envía ESC/POS a la impresora (silencioso) */
+const printKitchenViaQZ = async (order, { printerHint = 'XP' } = {}) => {
+  await ensureQZ();
+  const printer = await getPrinterName(printerHint);
+  const cfg = qz.configs.create(printer, {
+    encoding: 'CP437',     // español básico; ajusta si tu impresora usa otro codepage
+    rasterize: false,      // enviamos ESC/POS crudo
+    colorType: 'blackwhite',
+    margins: 0,
+    copies: 1,
+    jobName: `Orden-${String(order.id).slice(0, 8)}`
+  });
+
+  const createdAt = new Date(order.created_at);
+  const mesa = order.tables?.name || 'N/A';
+  const mesero = order.users?.username || 'N/A';
+  const items = order.order_items || [];
+
+  // Calcula total
+  const total = items.reduce(
+    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
+    0
+  );
+
+  // Arma líneas de ítems
+  const itemLines = [];
+  items.forEach((it) => {
+    const name = it.menu_items?.name || 'Ítem';
+    const qty = String(it.quantity || 0);
+    const price = '$' + Number(it.price || 0).toFixed(2);
+
+    // Nombre puede ocupar varias líneas
+    const nameWrapped = wrapText(name, 22); // deja espacio para qty+price
+    // Primera línea: nombre + qty/price
+    itemLines.push(colLine(nameWrapped[0], `${qty} x ${price}`, 32));
+    // Resto de líneas: nombre continuo
+    for (let i = 1; i < nameWrapped.length; i++) itemLines.push(nameWrapped[i]);
+
+    // Notas (si hay)
+    if (it.notes) {
+      wrapText('Notas: ' + it.notes, 32).forEach((l) => itemLines.push(l));
+    }
+  });
+
+  // Comandos ESC/POS
+  const data = [
+    esc('1B40'),            // init
+    esc('1B7400'),          // codepage CP437
+    esc('1B6101'),          // center
+    esc('1D2111'),          // doble ancho+alto
+    txt('ORDEN COCINA\n'),
+    esc('1D2100'),          // normal
+    txt(`#${String(order.id).slice(0, 8)}  ${createdAt.toLocaleString('es-MX')}\n`),
+    txt('\n'),
+    esc('1B6100'),          // left
+    txt(`Mesa: ${mesa}\n`),
+    txt(`Mesero: ${mesero}\n`),
+    txt(`Estado: ${order.status}\n`),
+    txt('--------------------------------\n'),
+    txt(colLine('Producto', 'Cant x Precio') + '\n'),
+    txt('--------------------------------\n'),
+    ...itemLines.map((l) => txt(l + '\n')),
+    txt('--------------------------------\n'),
+    txt(colLine('TOTAL', '$' + total.toFixed(2)) + '\n'),
+    txt('\n\n'),
+    // Alimenta y corte (si soporta)
+    esc('1B6403'),          // feed 3
+    esc('1D5601'),          // cut parcial (algunas 58mm lo ignoran si no hay cutter)
+  ];
+
+  await qz.print(cfg, data);
+};
+
+/** ===== LÓGICA DE ÓRDENES ===== */
+
 const getOrCreateProfileId = async () => {
   let profileId = localStorage.getItem('user_id');
   if (profileId) return profileId;
 
-  const { data: authData, error: authErr } = await supabase.auth.getUser();
-  if (authErr) return null;
+  const { data: authData } = await supabase.auth.getUser();
   const authUser = authData?.user;
   if (!authUser?.id) return null;
 
@@ -39,8 +174,7 @@ const getOrCreateProfileId = async () => {
   const candidate = {
     auth_id: authUser.id,
     email: authUser.email || null,
-    username:
-      (authUser.email || '').split('@')[0] || 'user_' + String(authUser.id).slice(0, 8),
+    username: (authUser.email || '').split('@')[0] || 'user_' + String(authUser.id).slice(0, 8),
   };
 
   const { data: inserted, error: insErr } = await supabase
@@ -48,14 +182,12 @@ const getOrCreateProfileId = async () => {
     .insert(candidate)
     .select('id')
     .single();
-
   if (insErr) return null;
 
   localStorage.setItem('user_id', inserted.id);
   return inserted.id;
 };
 
-/** Helper: traer orden completa para imprimir */
 const fetchOrderDetailsForPrint = async (orderId) => {
   const { data, error } = await supabase
     .from('orders')
@@ -64,100 +196,13 @@ const fetchOrderDetailsForPrint = async (orderId) => {
       id, created_at, status,
       tables ( name ),
       users ( username ),
-      order_items (
-        quantity, price, notes,
-        menu_items ( name )
-      )
+      order_items ( quantity, price, notes, menu_items ( name ) )
     `
     )
     .eq('id', orderId)
     .single();
   if (error) throw error;
   return data;
-};
-
-/** Helper: generar HTML e imprimir en ventana (usa preOpen si se pasó) */
-const printKitchenTicket = (order, preOpen) => {
-  const createdAt = new Date(order.created_at);
-  const tableName = order.tables?.name || 'N/A';
-  const waiter = order.users?.username || 'N/A';
-
-  const itemsHTML =
-    (order.order_items || [])
-      .map(
-        (it) => `
-      <tr>
-        <td style="padding:4px 0">${it.menu_items?.name || 'Ítem'}</td>
-        <td style="text-align:center">${it.quantity}</td>
-        <td style="text-align:right">$${Number(it.price || 0).toFixed(2)}</td>
-      </tr>
-      ${it.notes ? `<tr><td colspan="3" style="font-size:11px;color:#555">Notas: ${it.notes}</td></tr>` : ''}
-    `
-      )
-      .join('') || '<tr><td colspan="3">(sin ítems)</td></tr>';
-
-  const total = (order.order_items || []).reduce(
-    (sum, it) => sum + Number(it.price || 0) * Number(it.quantity || 0),
-    0
-  );
-
-  const html = `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>Ticket Cocina #${String(order.id).slice(0, 8)}</title>
-    <style>
-      * { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
-      body { margin: 12px; }
-      .center { text-align: center; }
-      .title { font-weight: 800; font-size: 16px; }
-      .muted { color: #555; font-size: 12px; }
-      table { width: 100%; border-collapse: collapse; font-size: 13px; }
-      hr { border: 0; border-top: 1px dashed #999; margin: 8px 0; }
-      @media print { @page { margin: 6mm; } }
-    </style>
-  </head>
-  <body>
-    <div class="center title">ORDEN COCINA</div>
-    <div class="center muted">#${String(order.id).slice(0, 8)} — ${createdAt.toLocaleString('es-MX')}</div>
-    <hr/>
-    <div><strong>Mesa:</strong> ${tableName}</div>
-    <div><strong>Mesero:</strong> ${waiter}</div>
-    <div><strong>Estado:</strong> ${order.status}</div>
-    <hr/>
-    <table>
-      <thead>
-        <tr>
-          <th style="text-align:left">Producto</th>
-          <th style="text-align:center">Cant</th>
-          <th style="text-align:right">Precio</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${itemsHTML}
-      </tbody>
-      <tfoot>
-        <tr><td colspan="3"><hr/></td></tr>
-        <tr>
-          <td colspan="2" style="text-align:right"><strong>Total:</strong></td>
-          <td style="text-align:right"><strong>$${total.toFixed(2)}</strong></td>
-        </tr>
-      </tfoot>
-    </table>
-    <script>
-      setTimeout(function(){ window.print(); setTimeout(function(){ window.close(); }, 300); }, 100);
-    </script>
-  </body>
-</html>
-`;
-
-  const w = preOpen || window.open('', '_blank', 'width=480,height=640');
-  if (!w) return; // popup bloqueado
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
-  w.focus();
 };
 
 const Orders = () => {
@@ -169,7 +214,7 @@ const Orders = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(null);
 
-  // Por defecto NUEVAS órdenes arrancan en "preparing"
+  // Nuevas órdenes arrancan en "preparing"
   const [formData, setFormData] = useState({
     table_id: '',
     user_id: '',
@@ -186,17 +231,14 @@ const Orders = () => {
   const fetchData = async () => {
     setLoading(true);
 
-    const { data: ordersData, error: ordersError } = await supabase
+    const { data: ordersData } = await supabase
       .from('orders')
       .select(
         `
         *,
         tables ( name ),
         users ( username ),
-        order_items (
-          id, quantity, price, notes, status,
-          menu_items ( name )
-        )
+        order_items ( id, quantity, price, notes, status, menu_items ( name ) )
       `
       )
       .order('created_at', { ascending: false });
@@ -211,7 +253,6 @@ const Orders = () => {
       .select('id, name, price')
       .order('name', { ascending: true });
 
-    if (ordersError) setError('No pude traer las órdenes.');
     setOrders(ordersData || []);
     setTables(tablesData || []);
     setMenuItems(menuItemsData || []);
@@ -255,15 +296,12 @@ const Orders = () => {
 
   /** Crear/editar orden:
    *  - En creación: status = 'preparing'
-   *  - Tras crear: imprimir ticket cocina (abre ventana antes para evitar bloqueo)
+   *  - Tras crear: impresión silenciosa via QZ (ESC/POS)
    */
   const handleAddEditOrder = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
-
-    // Abrimos ventana ANTES de async para minimizar bloqueos de popup (solo en creación)
-    const preOpenWin = !currentOrder ? window.open('', '_blank', 'width=480,height=640') : null;
 
     let orderError = null;
     let newOrderData = null;
@@ -272,16 +310,14 @@ const Orders = () => {
     if (!currentOrder && !profileId) {
       setError('No se pudo crear/obtener el perfil del usuario.');
       setLoading(false);
-      if (preOpenWin) preOpenWin.close();
       return;
     }
 
     const totalAmount = calculateTotalAmount();
-
     const orderToSave = {
       table_id: formData.table_id,
       user_id: currentOrder ? formData.user_id || profileId : profileId,
-      status: currentOrder ? formData.status : 'preparing',
+      status: currentOrder ? formData.status : 'preparing', // forzamos "preparing" al crear
       total_amount: totalAmount,
     };
 
@@ -303,6 +339,7 @@ const Orders = () => {
     }
 
     if (!orderError && newOrderData) {
+      // Si editamos, reemplazamos ítems
       if (currentOrder) {
         const { error: delErr } = await supabase
           .from('order_items')
@@ -332,19 +369,16 @@ const Orders = () => {
     if (orderError) {
       setError(`¡Ups! No pude guardar la orden. Error: ${orderError.message}`);
       setLoading(false);
-      if (preOpenWin) preOpenWin.close();
       return;
     }
 
-    // Solo imprimir en creación (no en edición)
+    // 🔇 Impresión silenciosa tras crear (no al editar)
     if (!currentOrder) {
       try {
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
-        printKitchenTicket(fullOrder, preOpenWin);
+        await printKitchenViaQZ(fullOrder, { printerHint: 'XP' }); // busca impresora que contenga "XP" o usa la predeterminada
       } catch (printErr) {
-        // Si falló, cierra la ventana vacía si existe
-        if (preOpenWin && !preOpenWin.closed) preOpenWin.close();
-        console.warn('No se pudo imprimir el ticket:', printErr);
+        console.warn('No se pudo imprimir el ticket (QZ):', printErr);
       }
     }
 
@@ -403,20 +437,13 @@ const Orders = () => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'pending':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'preparing':
-        return 'bg-blue-100 text-blue-800';
-      case 'ready':
-        return 'bg-green-100 text-green-800';
-      case 'served':
-        return 'bg-purple-100 text-purple-800';
-      case 'paid':
-        return 'bg-gray-100 text-gray-800';
-      case 'cancelled':
-        return 'bg-red-100 text-red-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
+      case 'pending':    return 'bg-yellow-100 text-yellow-800';
+      case 'preparing':  return 'bg-blue-100 text-blue-800';
+      case 'ready':      return 'bg-green-100 text-green-800';
+      case 'served':     return 'bg-purple-100 text-purple-800';
+      case 'paid':       return 'bg-gray-100 text-gray-800';
+      case 'cancelled':  return 'bg-red-100 text-red-800';
+      default:           return 'bg-gray-100 text-gray-800';
     }
   };
 
@@ -451,296 +478,6 @@ const Orders = () => {
           <input
             type="text"
             placeholder="Buscar órdenes por mesa, mesero o estado..."
-            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-        </div>
-        <motion.button
-          onClick={openAddModal}
-          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <PlusCircle className="w-5 h-5" />
-          <span>Crear Nueva Orden</span>
-        </motion.button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        <AnimatePresence>
-          {filteredOrders.length === 0 ? (
-            <motion.div
-              className="col-span-full text-center py-10 text-gray-600 bg-white rounded-2xl shadow-xl p-8"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-            >
-              <ChefHat className="w-24 h-24 text-gray-400 mx-auto mb-6" />
-              <p className="text-xl font-semibold">¡No hay órdenes para mostrar!</p>
-              <p className="text-gray-500">
-                Es un buen momento para tomar un descanso... o para conseguir más clientes.
-              </p>
-            </motion.div>
-          ) : (
-            filteredOrders.map((order, index) => (
-              <motion.div
-                key={order.id}
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9 }}
-                transition={{ duration: 0.5, delay: index * 0.05 }}
-                className="bg-white rounded-2xl shadow-xl p-6 border border-gray-200 flex flex-col justify-between transform hover:scale-105 transition-transform duration-300"
-              >
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="text-xl font-bold text-gray-800">
-                      Orden #{String(order.id).substring(0, 8)}
-                    </h3>
-                    <span
-                      className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(
-                        order.status
-                      )}`}
-                    >
-                      {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
-                    </span>
-                  </div>
-                  <p className="text-gray-600 mb-2 flex items-center">
-                    <Table className="w-4 h-4 mr-2 text-gray-500" />
-                    Mesa: {order.tables?.name || 'N/A'}
-                  </p>
-                  <p className="text-gray-600 mb-2 flex items-center">
-                    <User className="w-4 h-4 mr-2 text-gray-500" />
-                    Mesero: {order.users?.username || 'N/A'}
-                  </p>
-                  <ul className="list-disc list-inside text-gray-700 text-sm mb-4">
-                    {(order.order_items || []).map((item) => (
-                      <li key={item.id}>
-                        {item.menu_items?.name} (x{item.quantity}) - $
-                        {Number(item.price || 0).toFixed(2)}
-                        {item.notes && (
-                          <span className="text-gray-500 italic"> ({item.notes})</span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="text-xl font-bold text-green-600 flex items-center">
-                    <DollarSign className="w-5 h-5 mr-1" />
-                    Total: $
-                    {(order.order_items || [])
-                      .reduce((t, it) => t + Number(it.price || 0) * Number(it.quantity || 0), 0)
-                      .toFixed(2)}
-                  </p>
-                </div>
-                <div className="flex justify-end space-x-3 mt-4">
-                  <motion.button
-                    onClick={() => openEditModal(order)}
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors duration-200"
-                    title="Editar Orden"
-                  >
-                    <Edit className="w-5 h-5" />
-                  </motion.button>
-                  <motion.button
-                    onClick={() => handleDeleteOrder(order.id)}
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200"
-                    title="Eliminar Orden"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </motion.button>
-                </div>
-              </motion.div>
-            ))
-          )}
-        </AnimatePresence>
-      </div>
-
-      <AnimatePresence>
-        {isModalOpen && (
-          <motion.div
-            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <motion.div
-              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-lg relative"
-              initial={{ opacity: 0, y: 50 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 50 }}
-              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
-            >
-              <button
-                onClick={closeModal}
-                className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
-              >
-                <XCircle className="w-6 h-6" />
-              </button>
-
-              <h3 className="text-2xl font-bold text-gray-800 mb-6">
-                {currentOrder ? 'Editar Orden' : 'Crear Nueva Orden'}
-              </h3>
-
-              <form onSubmit={handleAddEditOrder} className="space-y-5">
-                <div>
-                  <label htmlFor="table_id" className="block text-gray-700 text-sm font-medium mb-2">
-                    Mesa
-                  </label>
-                  <select
-                    id="table_id"
-                    name="table_id"
-                    value={formData.table_id}
-                    onChange={handleInputChange}
-                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    required
-                  >
-                    <option value="">Selecciona una mesa</option>
-                    {tables.map((table) => (
-                      <option key={table.id} value={table.id}>
-                        {table.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* En creación queda bloqueado en "preparing" */}
-                <div>
-                  <label htmlFor="status" className="block text-gray-700 text-sm font-medium mb-2">
-                    Estado de la Orden
-                  </label>
-                  <select
-                    id="status"
-                    name="status"
-                    value={formData.status}
-                    onChange={handleInputChange}
-                    className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                    disabled={!currentOrder}
-                    required
-                  >
-                    <option value="pending">Pendiente</option>
-                    <option value="preparing">Preparando</option>
-                    <option value="ready">Lista</option>
-                    <option value="served">Servida</option>
-                    <option value="paid">Pagada</option>
-                    <option value="cancelled">Cancelada</option>
-                  </select>
-                  {!currentOrder && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      Al crear, el estado se fija automáticamente en <strong>Preparando</strong>.
-                    </p>
-                  )}
-                </div>
-
-                <h4 className="text-lg font-bold text-gray-800 mt-6 mb-3">Items de la Orden</h4>
-                {formData.items.map((item, index) => (
-                  <div key={index} className="flex items-center space-x-3 bg-gray-50 p-3 rounded-lg">
-                    <div className="flex-grow">
-                      <label
-                        htmlFor={`menu_item_id-${index}`}
-                        className="block text-gray-700 text-xs font-medium mb-1"
-                      >
-                        Plato
-                      </label>
-                      <select
-                        id={`menu_item_id-${index}`}
-                        name="menu_item_id"
-                        value={item.menu_item_id}
-                        onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
-                        required
-                      >
-                        <option value="">Selecciona un plato</option>
-                        {menuItems.map((menuItem) => (
-                          <option key={menuItem.id} value={menuItem.id}>
-                            {menuItem.name} (${Number(menuItem.price || 0).toFixed(2)})
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="w-20">
-                      <label
-                        htmlFor={`quantity-${index}`}
-                        className="block text-gray-700 text-xs font-medium mb-1"
-                      >
-                        Cant.
-                      </label>
-                      <input
-                        type="number"
-                        id={`quantity-${index}`}
-                        name="quantity"
-                        value={item.quantity}
-                        onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
-                        min="1"
-                        required
-                      />
-                    </div>
-
-                    <div className="flex-grow">
-                      <label
-                        htmlFor={`notes-${index}`}
-                        className="block text-gray-700 text-xs font-medium mb-1"
-                      >
-                        Notas (Opcional)
-                      </label>
-                      <input
-                        type="text"
-                        id={`notes-${index}`}
-                        name="notes"
-                        value={item.notes}
-                        onChange={(e) => handleItemChange(index, e)}
-                        className="w-full p-2 border border-gray-300 rounded-lg focus:ring-1 focus:ring-indigo-500 focus:border-transparent text-sm"
-                        placeholder="Sin cebolla, extra picante..."
-                      />
-                    </div>
-
-                    <motion.button
-                      type="button"
-                      onClick={() => handleRemoveItem(index)}
-                      className="p-2 rounded-full bg-red-100 text-red-600 hover:bg-red-200 transition-colors duration-200 mt-auto"
-                      whileHover={{ scale: 1.1 }}
-                      whileTap={{ scale: 0.9 }}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </motion.button>
-                  </div>
-                ))}
-
-                <motion.button
-                  type="button"
-                  onClick={handleAddItem}
-                  className="w-full bg-gray-200 text-gray-700 px-4 py-2 rounded-xl hover:bg-gray-300 transition-colors duration-200 flex items-center justify-center space-x-2 mt-4"
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                >
-                  <PlusCircle className="w-5 h-5" />
-                  <span>Añadir Plato</span>
-                </motion.button>
-
-                <p className="text-xl font-bold text-gray-800 mt-6">
-                  Total de la Orden: ${calculateTotalAmount().toFixed(2)}
-                </p>
-
-                <motion.button
-                  type="submit"
-                  className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center mt-6 disabled:opacity-60"
-                  whileHover={{ scale: 1.02 }}
-                  whileTap={{ scale: 0.98 }}
-                  disabled={loading}
-                >
-                  {loading ? <LoadingSpinner /> : currentOrder ? 'Guardar Cambios' : 'Crear Orden'}
-                </motion.button>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-};
+            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-i
 
 export default Orders;
