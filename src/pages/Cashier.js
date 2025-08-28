@@ -22,14 +22,12 @@ import LoadingSpinner from '../components/LoadingSpinner';
 // CONFIGURACIÓN
 // =====================
 
-// ⬇️ Pega aquí tu URL PÚBLICA de Supabase para el logo (PNG/JPG/SVG):
-const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_juan_ok.png';
-// Ancho máximo del logo dentro del ticket (px). Se escala automáticamente.
-const LOGO_MAX_WIDTH_PX = 160;
+// MISMO LOGO QUE COCINA:
+const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
 
 // Columna de fecha en payments (debe tener DEFAULT now() en la BD)
 const DATE_COL = 'created_at';
-// Estado "pagada" de la orden (cámbialo si usas 'pagada' en español)
+// Estado "pagada" de la orden
 const PAID_STATUS = 'paid';
 // Zona horaria para mostrar fechas/hora
 const CDMX_TZ = 'America/Mexico_City';
@@ -387,7 +385,7 @@ const Cashier = () => {
     return !s || mesa.includes(s) || metodo.includes(s) || monto.includes(s);
   });
 
-  // ===== Impresión de ticket (58mm) con logo =====
+  // ===== Impresión de ticket (58mm) =====
   const fetchOrderDetail = async (orderId) => {
     const { data, error } = await supabase
       .from('orders')
@@ -439,94 +437,186 @@ const Cashier = () => {
         ? new Date(payment[DATE_COL]).toLocaleString('es-MX', { timeZone: CDMX_TZ })
         : new Date().toLocaleString('es-MX', { timeZone: CDMX_TZ });
 
-      const w = window.open('', '_blank', 'width=380,height=600');
+      const w = window.open('', '_blank', 'width=480,height=640');
 
       const styles = `
         <style>
-          @media print {
-            @page { size: 58mm auto; margin: 5mm; }
-            body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          @page { size: 58mm auto; margin: 0; }
+          html, body { margin: 0; padding: 0; }
+          body { width: 58mm; }
+
+          .ticket {
+            width: 48mm;
+            margin: 0 auto;
+            padding: 2mm;
+            box-sizing: border-box;
+
+            color: #000;
+            font-family: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+            font-weight: 700;
+            line-height: 1.25;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+            text-rendering: optimizeLegibility;
+
+            transform: translateX(0);
           }
-          body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-          .ticket { width: 260px; margin: 0 auto; }
+          * { -webkit-font-smoothing: none; -moz-osx-font-smoothing: auto; }
+
           .center { text-align: center; }
           .right { text-align: right; }
-          .row { display: flex; justify-content: space-between; }
-          .muted { color: #555; font-size: 12px; }
-          hr { border: none; border-top: 1px dashed #999; margin: 8px 0; }
-          .big { font-size: 18px; font-weight: 700; }
-          .bold { font-weight: 700; }
-          ul { padding-left: 0; list-style: none; }
-          li { margin: 4px 0; }
+
           .logo {
             display: block;
-            margin: 0 auto 6px;
-            max-width: ${LOGO_MAX_WIDTH_PX}px;
-            width: 100%;
-            height: auto;
-            object-fit: contain;
+            margin: 0 auto 2mm;
+            width: 48mm;
+            max-width: 48mm;
             image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            image-rendering: pixelated;
+          }
+
+          .title {
+            font-weight: 900;
+            font-size: 20px;
+            margin: 1mm 0 0.5mm;
+            letter-spacing: 0.2px;
+          }
+          .meta {
+            font-size: 14px;
+            font-weight: 800;
+            margin-bottom: 1mm;
+          }
+
+          hr {
+            border: 0;
+            border-top: 1px solid #000;
+            margin: 2mm 0;
+          }
+
+          .label { font-weight: 800; }
+
+          table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            font-size: 14px;
+          }
+          .col-name  { width: 60%; padding: 1mm 0 0.5mm 0; font-weight: 800; }
+          .col-qty   { width: 15%; text-align: center; font-weight: 900; }
+          .col-amt   { width: 25%; text-align: right;  font-weight: 900; }
+          td { vertical-align: top; }
+
+          .notes { font-size: 13px; font-weight: 700; margin-top: 0.5mm; }
+          .col-name, .notes { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
+
+          @media print {
+            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           }
         </style>
       `;
 
       const headerHtml = LOGO_URL
-        ? `<img src="${LOGO_URL}" alt="logo" class="logo" crossorigin="anonymous" />`
-        : `<div class="big">Ticket</div>`;
+        ? `<img src="${LOGO_URL}" alt="logo" class="logo" width="384" crossorigin="anonymous" referrerpolicy="no-referrer" />`
+        : `<div class="title center">TICKET</div>`;
+
+      // tabla de ítems
+      const itemsHtml = items.length
+        ? items.map(it => {
+            const name = it?.menu_items?.name || '—';
+            const qty  = Number(it.quantity || 0);
+            const price = Number(it.price || 0);
+            const line = (qty * price).toFixed(2);
+            return `
+              <tr>
+                <td class="col-name">
+                  ${name}
+                  ${it.notes ? `<div class="notes">Notas: ${it.notes}</div>` : ''}
+                </td>
+                <td class="col-qty">${qty}</td>
+                <td class="col-amt">$${line}</td>
+              </tr>
+            `;
+          }).join('')
+        : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-amt"></td></tr>`;
 
       const html = `
-        <div class="ticket">
-          <div class="center">
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Ticket de Caja</title>
+          ${styles}
+        </head>
+        <body>
+          <div class="ticket">
             ${headerHtml}
-            <div class="muted">${printedWhen} (CDMX)</div>
-            <div class="muted">Orden #${String(detail.id).slice(0,8)} — Mesa ${detail?.tables?.name || 'N/A'}</div>
-          </div>
-          <hr/>
-          <ul>
-            ${items.map(it => {
-              const name = it?.menu_items?.name || '—';
-              const qty = Number(it.quantity || 0);
-              const price = Number(it.price || 0);
-              const line = (qty * price).toFixed(2);
-              return `<li>
-                <div class="row"><span>${name} x${qty}</span><span>$${line}</span></div>
-                ${it.notes ? `<div class="muted">· ${it.notes}</div>` : ''}
-              </li>`;
-            }).join('')}
-          </ul>
-          <hr/>
-          <div class="row"><span>Subtotal</span><span>$${Number(detail.total_amount || 0).toFixed(2)}</span></div>
-          <div class="row"><span>Pagado (acumulado)</span><span>$${paidTotal.toFixed(2)}</span></div>
-          <div class="row"><span>Pendiente</span><span>$${due.toFixed(2)}</span></div>
-          <hr/>
-          <div class="row"><span>Pago actual</span><span>$${Number(payment.amount || 0).toFixed(2)}</span></div>
-          <div class="row"><span>Método</span><span>${payment.payment_method || '—'}</span></div>
-          ${Number.isFinite(tendered) ? `
-            <div class="row"><span>Entregado</span><span>$${tendered.toFixed(2)}</span></div>
-            <div class="row bold"><span>Cambio</span><span>$${change.toFixed(2)}</span></div>
-          ` : ''}
-          <hr/>
-          <div class="center muted">¡Gracias por su compra!</div>
-        </div>
 
-        <script>
-          // Espera a que carguen todas las imágenes (logo) antes de imprimir
-          (function(){
-            function waitImages(){
-              const imgs = Array.from(document.images);
-              return Promise.all(imgs.map(img => img.complete
-                ? Promise.resolve()
-                : new Promise(res => { img.addEventListener('load', res); img.addEventListener('error', res); })
-              ));
-            }
-            waitImages().then(function(){
-              setTimeout(function(){ window.focus(); window.print(); window.close(); }, 150);
-            });
-          })();
-        </script>
+            <div class="center title">TICKET DE CAJA</div>
+            <div class="center meta">
+              #${String(detail.id).slice(0,8)} — ${printedWhen} (CDMX)
+            </div>
+
+            <hr />
+
+            <div><span class="label">Mesa:</span> ${detail?.tables?.name || 'N/A'}</div>
+            <div><span class="label">Estado:</span> ${detail?.status || '—'}</div>
+
+            <hr />
+
+            <table>
+              <thead>
+                <tr>
+                  <td class="col-name"><strong>Producto</strong></td>
+                  <td class="col-qty"><strong>Cant</strong></td>
+                  <td class="col-amt"><strong>Importe</strong></td>
+                </tr>
+              </thead>
+              <tbody>
+                ${itemsHtml}
+              </tbody>
+            </table>
+
+            <hr />
+
+            <table>
+              <tbody>
+                <tr><td class="col-name">Total</td><td></td><td class="col-amt">$${Number(detail.total_amount || 0).toFixed(2)}</td></tr>
+                <tr><td class="col-name">Pagado (acumulado)</td><td></td><td class="col-amt">$${paidTotal.toFixed(2)}</td></tr>
+                <tr><td class="col-name">Pendiente</td><td></td><td class="col-amt">$${due.toFixed(2)}</td></tr>
+                <tr><td class="col-name">Pago actual</td><td></td><td class="col-amt">$${Number(payment.amount || 0).toFixed(2)}</td></tr>
+                <tr><td class="col-name">Método</td><td></td><td class="col-amt">${payment.payment_method || '—'}</td></tr>
+                ${Number.isFinite(tendered) ? `
+                  <tr><td class="col-name">Entregado</td><td></td><td class="col-amt">$${tendered.toFixed(2)}</td></tr>
+                  <tr><td class="col-name"><strong>Cambio</strong></td><td></td><td class="col-amt"><strong>$${change.toFixed(2)}</strong></td></tr>
+                ` : ''}
+              </tbody>
+            </table>
+
+            <hr />
+            <div class="center meta">¡Gracias por su compra!</div>
+          </div>
+
+          <script>
+            (function(){
+              function waitImages(){
+                const imgs = Array.from(document.images);
+                return Promise.all(imgs.map(img => img.complete
+                  ? Promise.resolve()
+                  : new Promise(res => { img.addEventListener('load', res); img.addEventListener('error', res); })
+                ));
+              }
+              waitImages().then(function(){
+                setTimeout(function(){ window.focus(); window.print(); window.close(); }, 150);
+              });
+            })();
+          </script>
+        </body>
+        </html>
       `;
 
-      w.document.write(`<html><head><title>Ticket</title>${styles}</head><body>${html}</body></html>`);
+      w.document.open();
+      w.document.write(html);
       w.document.close();
     } catch (e) {
       setError(`No pude imprimir el ticket: ${e.message ?? e}`);
@@ -541,7 +631,7 @@ const Cashier = () => {
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="text-4xl font-extrabold text-gray-900 mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to purple-700"
+        className="text-4xl font-extrabold text-gray-900 mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-700"
       >
         Gestión de Caja
       </motion.h2>
