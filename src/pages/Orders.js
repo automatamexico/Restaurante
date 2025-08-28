@@ -19,7 +19,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 /* ===========================
    Ticket HTML (58mm, ancho imprimible 48mm)
    =========================== */
-// REEMPLAZA tu función por esta
+// Ticket de cocina SIN precios/total, centrado
 const printKitchenTicket = (order) => {
   // ⬇️ pon aquí tu logo (o deja un archivo en /public y usa '/logo_384.png')
   const LOGO_URL = 'https://fialncxvjjptzacoyhzs.supabase.co/storage/v1/object/public/imagenescomida/logo_negro.png';
@@ -30,7 +30,9 @@ const printKitchenTicket = (order) => {
   const items = order.order_items || [];
 
   const itemsHTML = items.length
-    ? items.map(it => `
+    ? items
+        .map(
+          (it) => `
         <tr>
           <td class="col-name">
             ${it.menu_items?.name || 'Ítem'}
@@ -38,7 +40,9 @@ const printKitchenTicket = (order) => {
           </td>
           <td class="col-qty">${Number(it.quantity || 0)}</td>
         </tr>
-      `).join('')
+      `
+        )
+        .join('')
     : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td></tr>`;
 
   const html = `
@@ -399,45 +403,94 @@ const Orders = () => {
         total_amount: totalAmount,
       };
 
+      // ⚠️ Si es edición, detecta QUÉ ÍTEMS SON NUEVOS (no tienen id)
+      const newItemsClient = currentOrder
+        ? formData.items.filter((it) => !it.id)
+        : [];
+
       if (currentOrder) {
+        // --- EDITAR ORDEN ---
         const { error: updateOrderError } = await supabase
           .from('orders')
           .update(orderToSave)
           .eq('id', currentOrder.id);
         if (updateOrderError) throw updateOrderError;
+
         newOrderData = currentOrder;
 
-        // reemplazar ítems
+        // (Implementación simple) Reemplazamos ítems:
         const { error: delErr } = await supabase
           .from('order_items')
           .delete()
           .eq('order_id', newOrderData.id);
         if (delErr) throw delErr;
+
+        const itemsToInsert = formData.items.map((it) => {
+          const mi = menuItems.find((x) => x.id === it.menu_item_id);
+          return {
+            order_id: newOrderData.id,
+            menu_item_id: it.menu_item_id,
+            quantity: Number(it.quantity),
+            price: mi ? Number(mi.price) : 0,
+            notes: it.notes || null,
+          };
+        });
+
+        if (itemsToInsert.length) {
+          const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
+          if (insItemsErr) throw insItemsErr;
+        }
+
+        // ➜ Si se agregaron ítems nuevos, arma un "mini-orden" SOLO con esos nuevos para imprimir
+        if (newItemsClient.length > 0) {
+          const tableName =
+            tables.find((t) => String(t.id) === String(formData.table_id))?.name ||
+            currentOrder.tables?.name ||
+            'N/A';
+
+          // Construimos un objeto compatible con printKitchenTicket (solo nombres, cant y notas)
+          const partialOrder = {
+            id: newOrderData.id,
+            created_at: currentOrder.created_at,
+            status: orderToSave.status,
+            tables: { name: tableName },
+            users: { username: currentOrder.users?.username || 'N/A' },
+            order_items: newItemsClient.map((it) => {
+              const mi = menuItems.find((m) => m.id === it.menu_item_id);
+              return {
+                quantity: Number(it.quantity),
+                notes: it.notes || '',
+                menu_items: { name: mi ? mi.name : 'Ítem' },
+              };
+            }),
+          };
+
+          setPrintOrder(partialOrder);
+          setPrintPromptOpen(true);
+        }
       } else {
+        // --- CREAR ORDEN ---
         const { data, error: insertOrderError } = await insertOrderWithFallback(orderToSave);
         if (insertOrderError) throw insertOrderError;
         newOrderData = data;
-      }
 
-      // Insertar ítems
-      const itemsToInsert = formData.items.map((it) => {
-        const mi = menuItems.find((x) => x.id === it.menu_item_id);
-        return {
-          order_id: newOrderData.id,
-          menu_item_id: it.menu_item_id,
-          quantity: Number(it.quantity),
-          price: mi ? Number(mi.price) : 0,
-          notes: it.notes || null,
-        };
-      });
+        const itemsToInsert = formData.items.map((it) => {
+          const mi = menuItems.find((x) => x.id === it.menu_item_id);
+          return {
+            order_id: newOrderData.id,
+            menu_item_id: it.menu_item_id,
+            quantity: Number(it.quantity),
+            price: mi ? Number(mi.price) : 0,
+            notes: it.notes || null,
+          };
+        });
 
-      if (itemsToInsert.length) {
-        const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
-        if (insItemsErr) throw insItemsErr;
-      }
+        if (itemsToInsert.length) {
+          const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
+          if (insItemsErr) throw insItemsErr;
+        }
 
-      // Si es NUEVA orden, preguntar si imprime
-      if (!currentOrder) {
+        // Para orden NUEVA, imprimimos TODO (como antes)
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
         setPrintOrder(fullOrder);
         setPrintPromptOpen(true);
@@ -483,6 +536,7 @@ const Orders = () => {
       status: order.status,
       items: (order.order_items || []).map((item) => ({
         id: item.id,
+        // menu_item_id viene del SELECT; si no, ajusta a tu esquema
         menu_item_id: item.menu_item_id || null,
         quantity: item.quantity,
         notes: item.notes,
@@ -508,13 +562,20 @@ const Orders = () => {
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'pending':    return 'bg-yellow-100 text-yellow-800';
-      case 'preparing':  return 'bg-blue-100 text-blue-800';
-      case 'ready':      return 'bg-green-100 text-green-800';
-      case 'served':     return 'bg-purple-100 text-purple-800';
-      case 'paid':       return 'bg-gray-100 text-gray-800';
-      case 'cancelled':  return 'bg-red-100 text-red-800';
-      default:           return 'bg-gray-100 text-gray-800';
+      case 'pending':
+        return 'bg-yellow-100 text-yellow-800';
+      case 'preparing':
+        return 'bg-blue-100 text-blue-800';
+      case 'ready':
+        return 'bg-green-100 text-green-800';
+      case 'served':
+        return 'bg-purple-100 text-purple-800';
+      case 'paid':
+        return 'bg-gray-100 text-gray-800';
+      case 'cancelled':
+        return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
     }
   };
 
@@ -875,6 +936,5 @@ const Orders = () => {
 };
 
 export default Orders;
-
 
 
