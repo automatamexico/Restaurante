@@ -428,9 +428,10 @@ const Cashier = () => {
       const change = Number.isFinite(tendered) ? Math.max(0, tendered - Number(payment.amount || 0)) : 0;
 
       const items = detail?.order_items || [];
+      // paidTotal y due no se muestran, pero pueden ser útiles si luego los necesitas:
       const paymentsRows = detail?.payments || [];
-      const paidTotal = (paymentsRows || []).reduce((s, r) => s + Number(r.amount || 0), 0);
-      const due = Math.max(0, Number(detail.total_amount || 0) - paidTotal);
+      const paidTotal = (paymentsRows || []).reduce((s, r) => s + Number(r.amount || 0), 0); // no usado en impresión
+      const due = Math.max(0, Number(detail.total_amount || 0) - paidTotal);                 // no usado en impresión
 
       // Fecha del pago en CDMX
       const printedWhen = payment[DATE_COL]
@@ -540,6 +541,7 @@ const Cashier = () => {
           }).join('')
         : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-amt"></td></tr>`;
 
+      // *** QUITADO: Pagado (acumulado), Pendiente y Pago actual ***
       const html = `
         <!DOCTYPE html>
         <html>
@@ -581,11 +583,14 @@ const Cashier = () => {
 
             <table>
               <tbody>
-                <tr><td class="col-name">Total</td><td></td><td class="col-amt">$${Number(detail.total_amount || 0).toFixed(2)}</td></tr>
-                <tr><td class="col-name">Pagado (acumulado)</td><td></td><td class="col-amt">$${paidTotal.toFixed(2)}</td></tr>
-                <tr><td class="col-name">Pendiente</td><td></td><td class="col-amt">$${due.toFixed(2)}</td></tr>
-                <tr><td class="col-name">Pago actual</td><td></td><td class="col-amt">$${Number(payment.amount || 0).toFixed(2)}</td></tr>
-                <tr><td class="col-name">Método</td><td></td><td class="col-amt">${payment.payment_method || '—'}</td></tr>
+                <tr>
+                  <td class="col-name">Total</td><td></td>
+                  <td class="col-amt">$${Number(detail.total_amount || 0).toFixed(2)}</td>
+                </tr>
+                <tr>
+                  <td class="col-name">Método</td><td></td>
+                  <td class="col-amt">${payment.payment_method || '—'}</td>
+                </tr>
                 ${Number.isFinite(tendered) ? `
                   <tr><td class="col-name">Entregado</td><td></td><td class="col-amt">$${tendered.toFixed(2)}</td></tr>
                   <tr><td class="col-name"><strong>Cambio</strong></td><td></td><td class="col-amt"><strong>$${change.toFixed(2)}</strong></td></tr>
@@ -703,7 +708,7 @@ const Cashier = () => {
           <input
             type="text"
             placeholder="Buscar pagos por mesa, método o monto..."
-            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duration-200"
+            className="w-full p-3 pl-10 rounded-xl border border-gray-300 focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all duración-200"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -968,3 +973,4 @@ const Cashier = () => {
 };
 
 export default Cashier;
+
