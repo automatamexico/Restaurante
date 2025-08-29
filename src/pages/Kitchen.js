@@ -18,12 +18,36 @@ const Kitchen = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // === Helpers: rango de hoy y etiquetas de estado en español ===
+  const startEndOfDayISO = (date) => {
+    const d = new Date(date);
+    const start = new Date(d);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { startISO: start.toISOString(), endISO: end.toISOString() };
+  };
+
+  const statusES = (s) => {
+    switch ((s || '').toLowerCase()) {
+      case 'pending': return 'Pendiente';
+      case 'in_progress': return 'En preparación';
+      case 'ready': return 'Lista';
+      case 'delivered': return 'Entregada';
+      case 'cancelled': return 'Cancelada';
+      default: return s || '—';
+    }
+  };
+
   useEffect(() => {
     fetchKitchenOrders();
   }, []);
 
   const fetchKitchenOrders = async () => {
     setLoading(true);
+
+    const { startISO, endISO } = startEndOfDayISO(new Date());
+
     const { data, error } = await supabase
       .from('kitchen_orders')
       .select(`
@@ -39,6 +63,8 @@ const Kitchen = () => {
         ),
         users ( username )
       `)
+      .gte('created_at', startISO)   // ⬅️ Solo de hoy
+      .lt('created_at', endISO)      // ⬅️ Solo de hoy
       .order('created_at', { ascending: true });
 
     if (error) {
@@ -148,7 +174,7 @@ const Kitchen = () => {
                         order.status
                       )}`}
                     >
-                      {order.status.charAt(0).toUpperCase() + order.status.slice(1)}
+                      {statusES(order.status)}
                     </span>
                   </div>
 
@@ -173,7 +199,7 @@ const Kitchen = () => {
 
                   <p className="text-gray-500 text-xs flex items-center">
                     <Clock className="w-3 h-3 mr-1" />
-                    Pedido: {new Date(order.created_at).toLocaleTimeString()}
+                    Pedido: {new Date(order.created_at).toLocaleTimeString('es-MX')}
                   </p>
                 </div>
 
@@ -203,7 +229,7 @@ const Kitchen = () => {
                     </motion.button>
                   )}
 
-                  {/* NUEVO: botón para marcar como ENTREGADO cuando ya está 'ready' */}
+                  {/* Botón para marcar como ENTREGADO cuando ya está 'ready' */}
                   {order.status === 'ready' && (
                     <motion.button
                       onClick={() => updateOrderStatus(order.id, 'delivered')}
