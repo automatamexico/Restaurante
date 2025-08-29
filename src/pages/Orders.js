@@ -313,6 +313,11 @@ const Orders = () => {
   const [historyOrders, setHistoryOrders] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Detalle dentro del historial
+  const [historySelectedId, setHistorySelectedId] = useState(null);
+  const [historyDetails, setHistoryDetails] = useState(null);
+  const [historyDetailsLoading, setHistoryDetailsLoading] = useState(false);
+
   useEffect(() => {
     fetchDataForToday();
   }, []);
@@ -359,6 +364,8 @@ const Orders = () => {
 
   const fetchHistoryForDate = async (yyyyMMdd) => {
     setHistoryLoading(true);
+    setHistorySelectedId(null);
+    setHistoryDetails(null);
     const { startISO, endISO } = startEndOfDayISO(yyyyMMdd);
 
     const { data, error: err } = await supabase
@@ -374,6 +381,32 @@ const Orders = () => {
 
     if (!err) setHistoryOrders(data || []);
     setHistoryLoading(false);
+  };
+
+  const fetchHistoryDetails = async (orderId) => {
+    setHistoryDetailsLoading(true);
+    setHistorySelectedId(orderId);
+    setHistoryDetails(null);
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select(`
+        id, created_at, status,
+        tables:table_id ( name ),
+        users:user_id ( username ),
+        order_items (
+          id, quantity, price, notes,
+          menu_items:menu_item_id ( name )
+        ),
+        payments:payments ( amount )
+      `)
+      .eq('id', orderId)
+      .single();
+
+    if (!error) {
+      setHistoryDetails(data);
+    }
+    setHistoryDetailsLoading(false);
   };
 
   const handleInputChange = (e) => {
@@ -1002,7 +1035,7 @@ const Orders = () => {
         )}
       </AnimatePresence>
 
-      {/* ===== Modal: Historial de Órdenes ===== */}
+      {/* ===== Modal: Historial de Órdenes (con detalles al hacer clic) ===== */}
       <AnimatePresence>
         {historyOpen && (
           <motion.div
@@ -1012,7 +1045,7 @@ const Orders = () => {
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="bg-white p-6 rounded-3xl shadow-2xl w-full max-w-2xl relative"
+              className="bg-white p-6 rounded-3xl shadow-2xl w-full max-w-4xl relative"
               initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 40 }}
@@ -1051,29 +1084,92 @@ const Orders = () => {
                 </button>
               </div>
 
-              <div className="max-h-[60vh] overflow-auto">
-                {historyLoading ? (
-                  <div className="py-10"><LoadingSpinner /></div>
-                ) : historyOrders.length === 0 ? (
-                  <p className="text-gray-500">No hay órdenes para ese día.</p>
-                ) : (
-                  <ul className="divide-y divide-gray-200">
-                    {historyOrders.map((o) => (
-                      <li key={o.id} className="py-3 flex items-center justify-between">
-                        <div className="text-gray-700">
-                          <span className="font-semibold">Orden #{String(o.id).slice(0,8)}</span>
-                          {' — '}Mesa {o?.tables?.name || 'N/A'}
-                          <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${getStatusColor(o.status)}`}>
-                            {statusES(o.status)}
-                          </span>
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {new Date(o.created_at).toLocaleString('es-MX')}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+              <div className="grid md:grid-cols-2 gap-6">
+                {/* Lista de órdenes (izquierda) */}
+                <div className="max-h-[60vh] overflow-auto">
+                  {historyLoading ? (
+                    <div className="py-10"><LoadingSpinner /></div>
+                  ) : historyOrders.length === 0 ? (
+                    <p className="text-gray-500">No hay órdenes para ese día.</p>
+                  ) : (
+                    <ul className="divide-y divide-gray-200">
+                      {historyOrders.map((o) => {
+                        const isSelected = historySelectedId === o.id;
+                        return (
+                          <li
+                            key={o.id}
+                            className={`py-3 px-2 flex items-center justify-between cursor-pointer hover:bg-gray-50 rounded-lg ${isSelected ? 'bg-indigo-50' : ''}`}
+                            onClick={() => fetchHistoryDetails(o.id)}
+                            title="Ver detalles"
+                          >
+                            <div className="text-gray-700">
+                              <span className="font-semibold">Orden #{String(o.id).slice(0,8)}</span>
+                              {' — '}Mesa {o?.tables?.name || 'N/A'}
+                              <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${getStatusColor(o.status)}`}>
+                                {statusES(o.status)}
+                              </span>
+                            </div>
+                            <div className="text-sm text-gray-500">
+                              {new Date(o.created_at).toLocaleString('es-MX')}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+
+                {/* Detalle de la orden seleccionada (derecha) */}
+                <div className="max-h-[60vh] overflow-auto border border-gray-200 rounded-xl p-4">
+                  {!historySelectedId ? (
+                    <p className="text-gray-500">Selecciona una orden para ver sus detalles.</p>
+                  ) : historyDetailsLoading ? (
+                    <div className="py-10"><LoadingSpinner /></div>
+                  ) : !historyDetails ? (
+                    <p className="text-gray-500">No se pudo cargar el detalle.</p>
+                  ) : (
+                    <div>
+                      <h4 className="text-xl font-bold text-gray-800 mb-2">
+                        Orden #{String(historyDetails.id).slice(0,8)}{' '}
+                        <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${getStatusColor(historyDetails.status)}`}>
+                          {statusES(historyDetails.status)}
+                        </span>
+                      </h4>
+                      <p className="text-gray-700 mb-1"><strong>Mesa:</strong> {historyDetails?.tables?.name || 'N/A'}</p>
+                      <p className="text-gray-700 mb-3"><strong>Mesero:</strong> {historyDetails?.users?.username || 'N/A'}</p>
+
+                      <h5 className="font-semibold text-gray-800 mt-3 mb-2">Productos</h5>
+                      {(historyDetails.order_items || []).length === 0 ? (
+                        <p className="text-gray-500">Sin productos.</p>
+                      ) : (
+                        <ul className="list-disc list-inside text-gray-700 text-sm space-y-1">
+                          {historyDetails.order_items.map((it) => {
+                            const name = it?.menu_items?.name || '—';
+                            const qty = Number(it.quantity || 0);
+                            const price = Number(it.price || 0);
+                            return (
+                              <li key={it.id}>
+                                {name} (x{qty}) — ${ (qty * price).toFixed(2) }
+                                {it.notes ? <span className="text-gray-500 italic"> — {it.notes}</span> : null}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+
+                      <hr className="my-3" />
+
+                      <p className="text-gray-800 text-base font-semibold">
+                        Total pagado:{' '}
+                        ${((historyDetails.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0)).toFixed(2)}
+                      </p>
+
+                      <p className="text-gray-500 text-sm mt-1">
+                        Creada: {new Date(historyDetails.created_at).toLocaleString('es-MX')}
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           </motion.div>
