@@ -315,7 +315,6 @@ const Orders = () => {
 
   useEffect(() => {
     fetchDataForToday();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchDataForToday = async () => {
@@ -1086,7 +1085,6 @@ const Orders = () => {
 
 export default Orders;
 
-             
 
 
 
