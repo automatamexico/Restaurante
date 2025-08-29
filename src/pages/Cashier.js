@@ -251,6 +251,11 @@ const Cashier = () => {
     }
   };
 
+  // Total del día (para el historial)
+  const historyTotal = useMemo(() => {
+    return (historyPayments || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+  }, [historyPayments]);
+
   // Si los pagos cubren el total, marcar orden como 'paid'
   const settleOrderIfFullyPaid = async (orderId) => {
     try {
@@ -1132,6 +1137,16 @@ const Cashier = () => {
                   </ul>
                 )}
               </div>
+
+              {/* TOTAL DE PAGOS DEL DÍA */}
+              <div className="mt-4 flex items-center justify-end">
+                <div className="text-right">
+                  <div className="text-sm text-gray-600">Total de Pagos del día</div>
+                  <div className="text-xl font-bold text-gray-900">
+                    ${Number(historyTotal).toFixed(2)}
+                  </div>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -1244,3 +1259,4 @@ const Cashier = () => {
 };
 
 export default Cashier;
+
