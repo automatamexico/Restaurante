@@ -73,7 +73,7 @@ const Dashboard = () => {
         r => Number(r.quantity || 0) <= Number(r.min_stock_level || 0)
       ).length;
 
-      // Órdenes recientes (últimas 5)
+      // Órdenes recientes del DÍA (últimas 5 de hoy)
       const { data: recent, error: recentErr } = await supabase
         .from('orders')
         .select(`
@@ -82,6 +82,8 @@ const Dashboard = () => {
           created_at,
           tables:table_id ( name )
         `)
+        .gte('created_at', start.toISOString())
+        .lt('created_at', end.toISOString())
         .order('created_at', { ascending: false })
         .limit(5);
       if (recentErr) throw recentErr;
@@ -127,6 +129,19 @@ const Dashboard = () => {
     }
   };
 
+  // 🔤 Traducción de estatus al español para mostrar en Actividad Reciente
+  const statusToEs = (status) => {
+    const map = {
+      pending: 'Pendiente',
+      preparing: 'Preparando',
+      ready: 'Lista',
+      served: 'Servida',
+      paid: 'Pagada',
+      cancelled: 'Cancelada',
+    };
+    return map[status] || status;
+  };
+
   if (loading) return <LoadingSpinner />;
 
   return (
@@ -145,8 +160,7 @@ const Dashboard = () => {
             onError={() => setLogoVisible(false)} // si falla, ocultamos el logo y dejamos solo el título
           />
         ) : null}
-     {/* Título eliminado */}
-
+        {/* Título eliminado */}
       </div>
 
       {error && (
@@ -200,7 +214,7 @@ const Dashboard = () => {
                 <span className="text-gray-700">
                   Orden #{String(o.id).slice(0, 8)} — Mesa {o?.tables?.name || 'N/A'}{' '}
                   <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${getStatusBadge(o.status)}`}>
-                    {o.status}
+                    {statusToEs(o.status)}
                   </span>
                 </span>
                 <span className="text-sm text-gray-500">
@@ -216,3 +230,4 @@ const Dashboard = () => {
 };
 
 export default Dashboard;
+
