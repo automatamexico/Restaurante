@@ -52,6 +52,24 @@ const PAID_STATUS = 'paid';
 // Zona horaria para mostrar fechas/hora
 const CDMX_TZ = 'America/Mexico_City';
 
+const toISOStartEnd = (yyyy_mm_dd) => {
+  // yyyy-mm-dd -> rangos ISO (UTC) de 00:00 a 24:00 hora local
+  const base = yyyy_mm_dd ? new Date(`${yyyy_mm_dd}T00:00:00`) : new Date();
+  if (!yyyy_mm_dd) base.setHours(0, 0, 0, 0);
+  const start = new Date(base);
+  const end = new Date(base);
+  end.setDate(end.getDate() + 1);
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
+};
+
+const todayStr = () => {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 const Cashier = () => {
   const [payments, setPayments] = useState([]);
   const [orders, setOrders] = useState([]);             // órdenes no pagadas
@@ -67,6 +85,16 @@ const Cashier = () => {
   const [printPromptOpen, setPrintPromptOpen] = useState(false);
   const [printPayment, setPrintPayment] = useState(null);
 
+  // HISTORIAL
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(todayStr());
+  const [historyPayments, setHistoryPayments] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  // DETALLES (historial)
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailData, setDetailData] = useState(null); // { payment, orderDetail }
+
   // Form: NO incluye fecha/hora editable (la BD pone now())
   const [formData, setFormData] = useState({
     order_id: '',
@@ -78,19 +106,21 @@ const Cashier = () => {
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
-    fetchPaymentsAndOrders();
+    fetchPaymentsAndOrders(); // carga inicial (pagos HOY)
   }, []);
 
   const logDbg = (where, err) =>
     setDebug(prev => [...prev, { where, message: err?.message ?? String(err) }]);
 
+  // === Cargar HOY: pagos del día + órdenes facturables ===
   const fetchPaymentsAndOrders = async () => {
     setLoading(true);
     setError(null);
     setDebug([]);
 
     try {
-      // Pagos con joins
+      // --- Pagos de HOY
+      const { startIso, endIso } = toISOStartEnd(); // hoy
       const { data: paymentsData, error: paymentsError } = await supabase
         .from('payments')
         .select(`
@@ -110,6 +140,8 @@ const Cashier = () => {
             users:user_id ( username )
           )
         `)
+        .gte(DATE_COL, startIso)
+        .lt(DATE_COL, endIso)
         .order(DATE_COL, { ascending: false });
 
       if (paymentsError) {
@@ -117,7 +149,7 @@ const Cashier = () => {
         throw paymentsError;
       }
 
-      // Órdenes facturables (no pagadas ni canceladas)
+      // --- Órdenes facturables (no pagadas ni canceladas)
       const { data: billableOrders, error: ordersErr } = await supabase
         .from('orders')
         .select(`
@@ -136,7 +168,7 @@ const Cashier = () => {
         throw ordersErr;
       }
 
-      // Sumatoria de pagos por orden
+      // --- Sumatoria de pagos por orden (para calcular pendiente)
       const ids = (billableOrders || []).map(o => o.id);
       let paidMap = new Map();
       if (ids.length > 0) {
@@ -181,6 +213,41 @@ const Cashier = () => {
       setError('No pude traer los pagos.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Buscar pagos por FECHA (para Historial)
+  const fetchPaymentsByDate = async (yyyy_mm_dd) => {
+    setHistoryLoading(true);
+    try {
+      const { startIso, endIso } = toISOStartEnd(yyyy_mm_dd);
+      const { data, error } = await supabase
+        .from('payments')
+        .select(`
+          id,
+          order_id,
+          amount,
+          payment_method,
+          ${DATE_COL},
+          orders:order_id (
+            id,
+            total_amount,
+            created_at,
+            status,
+            tables:table_id ( name ),
+            users:user_id ( username )
+          )
+        `)
+        .gte(DATE_COL, startIso)
+        .lt(DATE_COL, endIso)
+        .order(DATE_COL, { ascending: false });
+
+      if (error) throw error;
+      setHistoryPayments(data || []);
+    } catch (e) {
+      setError('No pude cargar el historial de pagos: ' + (e.message || e));
+    } finally {
+      setHistoryLoading(false);
     }
   };
 
@@ -276,12 +343,7 @@ const Cashier = () => {
       const amountNum = Number(formData.amount);
       if (!Number.isFinite(amountNum) || amountNum <= 0) throw new Error('Monto inválido.');
 
-      // No permitir registrar pagos a órdenes ya pagadas
-      const maybePaid = payments.find(p => String(p.orders?.id) === String(formData.order_id))?.orders;
-      if (maybePaid && maybePaid.status === PAID_STATUS) {
-        throw new Error('La orden ya está pagada. No se pueden registrar más pagos.');
-      }
-
+      // No permitir registrar pagos a órdenes ya pagadas (en el selector solo salen no pagadas)
       if (formData.payment_method === 'cash') {
         const tenderedNum = Number(formData.tendered);
         if (!Number.isFinite(tenderedNum) || tenderedNum < amountNum) {
@@ -289,7 +351,6 @@ const Cashier = () => {
         }
       }
 
-      // NO enviamos created_at: lo pone la BD (DEFAULT now())
       const toSave = {
         order_id: formData.order_id || null,
         amount: amountNum,
@@ -299,18 +360,12 @@ const Cashier = () => {
       let inserted = null;
 
       if (currentPayment) {
-        // EDITAR pago (no dispara confirmación de impresión)
-        const statusNow = currentPayment?.orders?.status;
-        if (statusNow === PAID_STATUS) {
-          throw new Error('No puedes editar pagos de una orden ya pagada.');
-        }
         const { error } = await supabase.from('payments').update(toSave).eq('id', currentPayment.id);
         if (error) {
           logDbg('payments update', error);
           throw error;
         }
       } else {
-        // INSERTAR pago (mostramos confirmación de impresión)
         const { data, error } = await supabase
           .from('payments')
           .insert(toSave)
@@ -326,13 +381,13 @@ const Cashier = () => {
       // Marcar orden como pagada si aplica
       await settleOrderIfFullyPaid(toSave.order_id);
 
-      // Refrescar
+      // Refrescar HOY
       await fetchPaymentsAndOrders();
 
       // Cerrar modal del formulario
       closeModal();
 
-      // Si fue un nuevo pago, construir objeto para impresión y preguntar
+      // Si fue un nuevo pago, preguntar imprimir
       if (!currentPayment) {
         const paymentForPrint = inserted || {
           order_id: toSave.order_id,
@@ -358,24 +413,11 @@ const Cashier = () => {
     setDebug([]);
 
     try {
-      // Leer estado de la orden para bloquear si ya está pagada
-      const { data: payRow, error: readErr } = await supabase
-        .from('payments')
-        .select('id, order_id, orders:order_id ( status )')
-        .eq('id', id)
-        .single();
-      if (readErr) throw readErr;
-
-      if (payRow?.orders?.status === PAID_STATUS) {
-        throw new Error('No puedes eliminar pagos de una orden ya pagada.');
-      }
-
       const { error } = await supabase.from('payments').delete().eq('id', id);
       if (error) {
         logDbg('payments delete', error);
         throw error;
       }
-
       await fetchPaymentsAndOrders();
     } catch (err) {
       console.error('handleDeletePayment error:', err);
@@ -397,7 +439,8 @@ const Cashier = () => {
   };
 
   const openEditModal = (payment) => {
-    if (payment?.orders?.status === PAID_STATUS) {
+    const isOrderPaid = payment?.orders?.status === PAID_STATUS;
+    if (isOrderPaid) {
       setError('No puedes editar pagos de una orden ya pagada.');
       return;
     }
@@ -423,7 +466,7 @@ const Cashier = () => {
     setError(null);
   };
 
-  // Búsqueda rápida en pagos
+  // Búsqueda rápida (sobre pagos HOY)
   const s = searchTerm.trim().toLowerCase();
   const filteredPayments = (payments || []).filter(p => {
     const mesa = p?.orders?.tables?.name ? String(p.orders.tables.name).toLowerCase() : '';
@@ -432,7 +475,7 @@ const Cashier = () => {
     return !s || mesa.includes(s) || metodo.includes(s) || monto.includes(s);
   });
 
-  // ===== Impresión de ticket (58mm) =====
+  // ===== Helpers impresión / detalles =====
   const fetchOrderDetail = async (orderId) => {
     const { data, error } = await supabase
       .from('orders')
@@ -472,11 +515,8 @@ const Cashier = () => {
         const n = Number(input);
         if (Number.isFinite(n)) tendered = n;
       }
-      const change = Number.isFinite(tendered) ? Math.max(0, tendered - Number(payment.amount || 0)) : 0;
 
       const items = detail?.order_items || [];
-
-      // Fecha del pago en CDMX
       const printedWhen = payment[DATE_COL]
         ? new Date(payment[DATE_COL]).toLocaleString('es-MX', { timeZone: CDMX_TZ })
         : new Date().toLocaleString('es-MX', { timeZone: CDMX_TZ });
@@ -488,75 +528,27 @@ const Cashier = () => {
           @page { size: 58mm auto; margin: 0; }
           html, body { margin: 0; padding: 0; }
           body { width: 58mm; }
-
           .ticket {
-            width: 48mm;
-            margin: 0 auto;
-            padding: 2mm;
-            box-sizing: border-box;
-
-            color: #000;
-            font-family: "Courier New", ui-monospace, Menlo, Consolas, monospace;
-            font-weight: 700;
-            line-height: 1.25;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-            text-rendering: optimizeLegibility;
-
-            transform: translateX(0);
+            width: 48mm; margin: 0 auto; padding: 2mm; box-sizing: border-box;
+            color: #000; font-family: "Courier New", ui-monospace, Menlo, Consolas, monospace;
+            font-weight: 700; line-height: 1.25; -webkit-print-color-adjust: exact; print-color-adjust: exact;
+            text-rendering: optimizeLegibility; transform: translateX(0);
           }
           * { -webkit-font-smoothing: none; -moz-osx-font-smoothing: auto; }
-
           .center { text-align: center; }
-          .right { text-align: right; }
-
-          .logo {
-            display: block;
-            margin: 0 auto 2mm;
-            width: 48mm;
-            max-width: 48mm;
-            image-rendering: -webkit-optimize-contrast;
-            image-rendering: crisp-edges;
-            image-rendering: pixelated;
-          }
-
-          .title {
-            font-weight: 900;
-            font-size: 20px;
-            margin: 1mm 0 0.5mm;
-            letter-spacing: 0.2px;
-          }
-          .meta {
-            font-size: 14px;
-            font-weight: 800;
-            margin-bottom: 1mm;
-          }
-
-          hr {
-            border: 0;
-            border-top: 1px solid #000;
-            margin: 2mm 0;
-          }
-
-          .label { font-weight: 800; }
-
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-            font-size: 14px;
-          }
-          .col-name  { width: 60%; padding: 1mm 0 0.5mm 0; font-weight: 800; }
-          .col-qty   { width: 15%; text-align: center; font-weight: 900; }
-          .col-amt   { width: 25%; text-align: right;  font-weight: 900; }
-          td { vertical-align: top; }
-
-          .notes { font-size: 13px; font-weight: 700; margin-top: 0.5mm; }
+          .logo { display:block; margin:0 auto 2mm; width:48mm; max-width:48mm; image-rendering:-webkit-optimize-contrast; image-rendering:crisp-edges; image-rendering:pixelated; }
+          .title { font-weight:900; font-size:20px; margin:1mm 0 .5mm; letter-spacing:.2px; }
+          .meta { font-size:14px; font-weight:800; margin-bottom:1mm; }
+          hr { border:0; border-top:1px solid #000; margin:2mm 0; }
+          .label { font-weight:800; }
+          table { width:100%; border-collapse:collapse; table-layout:fixed; font-size:14px; }
+          .col-name{ width:60%; padding:1mm 0 .5mm 0; font-weight:800; }
+          .col-qty { width:15%; text-align:center; font-weight:900; }
+          .col-amt { width:25%; text-align:right; font-weight:900; }
+          td { vertical-align:top; }
+          .notes { font-size:13px; font-weight:700; margin-top:.5mm; }
           .col-name, .notes { word-break: break-word; overflow-wrap: anywhere; white-space: normal; }
-
-          @media print {
-            * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          }
+          @media print { * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         </style>
       `;
 
@@ -583,79 +575,40 @@ const Cashier = () => {
           }).join('')
         : `<tr><td class="col-name">(sin ítems)</td><td class="col-qty"></td><td class="col-amt"></td></tr>`;
 
-      // Ticket (estado en español) y SIN pagado/pendiente/pago actual (ya removidos)
       const html = `
         <!DOCTYPE html>
         <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>Ticket de Caja</title>
-          ${styles}
-        </head>
+        <head><meta charset="utf-8" /><title>Ticket de Caja</title>${styles}</head>
         <body>
           <div class="ticket">
             ${headerHtml}
-
             <div class="center title">TICKET DE CAJA</div>
-            <div class="center meta">
-              #${String(detail.id).slice(0,8)} — ${printedWhen} (CDMX)
-            </div>
-
+            <div class="center meta">#${String(detail.id).slice(0,8)} — ${printedWhen} (CDMX)</div>
             <hr />
-
             <div><span class="label">Mesa:</span> ${detail?.tables?.name || 'N/A'}</div>
             <div><span class="label">Estado:</span> ${statusLabel(detail?.status)}</div>
-
             <hr />
-
             <table>
-              <thead>
-                <tr>
-                  <td class="col-name"><strong>Producto</strong></td>
-                  <td class="col-qty"><strong>Cant</strong></td>
-                  <td class="col-amt"><strong>Importe</strong></td>
-                </tr>
-              </thead>
-              <tbody>
-                ${itemsHtml}
-              </tbody>
+              <thead><tr><td class="col-name"><strong>Producto</strong></td><td class="col-qty"><strong>Cant</strong></td><td class="col-amt"><strong>Importe</strong></td></tr></thead>
+              <tbody>${itemsHtml}</tbody>
             </table>
-
             <hr />
-
             <table>
               <tbody>
-                <tr>
-                  <td class="col-name">Total</td><td></td>
-                  <td class="col-amt">$${Number(detail.total_amount || 0).toFixed(2)}</td>
-                </tr>
-                <tr>
-                  <td class="col-name">Método</td><td></td>
-                  <td class="col-amt">${methodLabel(payment.payment_method)}</td>
-                </tr>
-                ${Number.isFinite(tendered) ? `
-                  <tr><td class="col-name">Entregado</td><td></td><td class="col-amt">$${tendered.toFixed(2)}</td></tr>
-                  <tr><td class="col-name"><strong>Cambio</strong></td><td></td><td class="col-amt"><strong>$${(Math.max(0, tendered - Number(payment.amount || 0))).toFixed(2)}</strong></td></tr>
-                ` : ''}
+                <tr><td class="col-name">Total</td><td></td><td class="col-amt">$${Number(detail.total_amount || 0).toFixed(2)}</td></tr>
+                <tr><td class="col-name">Método</td><td></td><td class="col-amt">${methodLabel(payment.payment_method)}</td></tr>
               </tbody>
             </table>
-
             <hr />
             <div class="center meta">¡Gracias por su compra!</div>
           </div>
-
           <script>
             (function(){
               function waitImages(){
                 const imgs = Array.from(document.images);
-                return Promise.all(imgs.map(img => img.complete
-                  ? Promise.resolve()
-                  : new Promise(res => { img.addEventListener('load', res); img.addEventListener('error', res); })
-                ));
+                return Promise.all(imgs.map(img => img.complete ? Promise.resolve() : new Promise(res => { img.addEventListener('load', res); img.addEventListener('error', res); })));
               }
-              waitImages().then(function(){
-                setTimeout(function(){ window.focus(); window.print(); window.close(); }, 150);
-              });
+              waitImages().then(function(){ setTimeout(function(){ window.focus(); window.print(); window.close(); }, 150); });
             })();
           </script>
         </body>
@@ -668,6 +621,33 @@ const Cashier = () => {
     } catch (e) {
       setError(`No pude imprimir el ticket: ${e.message ?? e}`);
     }
+  };
+
+  // === Historial handlers ===
+  const openHistory = async () => {
+    setHistoryOpen(true);
+    setSelectedDate(todayStr());
+    await fetchPaymentsByDate(todayStr());
+  };
+
+  const changeHistoryDate = async (val) => {
+    setSelectedDate(val);
+    if (val) await fetchPaymentsByDate(val);
+  };
+
+  const openPaymentDetails = async (payment) => {
+    try {
+      const orderDetail = await fetchOrderDetail(payment.order_id);
+      setDetailData({ payment, orderDetail });
+      setDetailOpen(true);
+    } catch (e) {
+      setError('No pude leer el detalle del pago: ' + (e.message || e));
+    }
+  };
+
+  const closeDetails = () => {
+    setDetailOpen(false);
+    setDetailData(null);
   };
 
   if (loading) return <LoadingSpinner />;
@@ -744,7 +724,7 @@ const Cashier = () => {
         )}
       </div>
 
-      {/* === BUSCADOR Y NUEVO PAGO === */}
+      {/* === BUSCADOR, NUEVO PAGO, HISTORIAL === */}
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div className="relative w-full md:w-1/2">
           <input
@@ -756,18 +736,30 @@ const Cashier = () => {
           />
           <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
         </div>
-        <motion.button
-          onClick={openAddModal}
-          className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duración-200 w-full md:w-auto justify-center"
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <PlusCircle className="w-5 h-5" />
-          <span>Registrar Nuevo Pago</span>
-        </motion.button>
+        <div className="flex gap-3 w-full md:w-auto">
+          <motion.button
+            onClick={openHistory}
+            className="bg-white border border-indigo-300 text-indigo-700 px-6 py-3 rounded-xl shadow hover:bg-indigo-50 flex items-center space-x-2 w-full md:w-auto justify-center"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <Calendar className="w-5 h-5" />
+            <span>Historial de pagos</span>
+          </motion.button>
+
+          <motion.button
+            onClick={openAddModal}
+            className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            <PlusCircle className="w-5 h-5" />
+            <span>Registrar Nuevo Pago</span>
+          </motion.button>
+        </div>
       </div>
 
-      {/* === GRID DE PAGOS === */}
+      {/* === GRID DE PAGOS (SOLO HOY) === */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         <AnimatePresence>
           {filteredPayments.length === 0 ? (
@@ -777,8 +769,8 @@ const Cashier = () => {
               animate={{ opacity: 1 }}
             >
               <Receipt className="w-24 h-24 text-gray-400 mx-auto mb-6" />
-              <p className="text-xl font-semibold">¡No hay pagos registrados!</p>
-              <p className="text-gray-500">Es hora de cobrar... o de revisar si el negocio está abierto.</p>
+              <p className="text-xl font-semibold">¡No hay pagos registrados hoy!</p>
+              <p className="text-gray-500">Registra un pago o consulta el historial.</p>
             </motion.div>
           ) : (
             filteredPayments.map((payment, index) => {
@@ -787,7 +779,6 @@ const Cashier = () => {
               const fechaText = payment[DATE_COL]
                 ? new Date(payment[DATE_COL]).toLocaleString('es-MX', { timeZone: CDMX_TZ })
                 : '—';
-              const shortId = String(payment.id).slice(0, 8);
               const mesaName = payment?.orders?.tables?.name ? `Mesa ${payment.orders.tables.name}` : 'N/A';
               const usuario = payment?.orders?.users?.username ?? null;
               const isOrderPaid = payment?.orders?.status === PAID_STATUS;
@@ -803,14 +794,17 @@ const Cashier = () => {
                 >
                   <div>
                     <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-2xl font-bold text-gray-800">Pago #{shortId}</h3>
+                      {/* IMPORTANTE: Mostrar Orden # para que coincida con el ticket */}
+                      <h3 className="text-2xl font-bold text-gray-800">
+                        Orden #{String(payment.order_id).slice(0, 8)}
+                      </h3>
                       <span className={`px-3 py-1 rounded-full text-sm font-semibold ${isOrderPaid ? 'bg-gray-100 text-gray-800' : 'bg-green-100 text-green-800'}`}>
                         ${amtText}
                       </span>
                     </div>
                     <p className="text-gray-600 mb-2 flex items-center">
                       <TableIcon className="w-4 h-4 mr-2 text-gray-500" />
-                      Orden: {mesaName}
+                      {mesaName}
                     </p>
                     <p className="text-gray-600 mb-2 flex items-center">
                       <DollarSign className="w-4 h-4 mr-2 text-gray-500" />
@@ -994,8 +988,6 @@ const Cashier = () => {
                   </div>
                 )}
 
-                {/* Sin campo de fecha/hora editable: lo pone la BD */}
-
                 <motion.button
                   type="submit"
                   className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 flex items-center justify-center"
@@ -1060,6 +1052,187 @@ const Cashier = () => {
                   }}
                 >
                   Aceptar e imprimir
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* === MODAL: HISTORIAL DE PAGOS === */}
+      <AnimatePresence>
+        {historyOpen && (
+          <motion.div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-40"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-3xl relative"
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            >
+              <button
+                onClick={() => setHistoryOpen(false)}
+                className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+
+              <div className="flex items-center gap-3 mb-4">
+                <Calendar className="w-7 h-7 text-indigo-600" />
+                <h3 className="text-2xl font-bold text-gray-800">Historial de pagos</h3>
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-sm text-gray-600 mb-1">Selecciona la fecha que deseas consultar</label>
+                <input
+                  type="date"
+                  className="p-3 border rounded-lg"
+                  value={selectedDate}
+                  onChange={(e) => changeHistoryDate(e.target.value)}
+                />
+              </div>
+
+              <div className="max-h-[60vh] overflow-auto border rounded-xl p-3">
+                {historyLoading ? (
+                  <div className="py-10"><LoadingSpinner /></div>
+                ) : historyPayments.length === 0 ? (
+                  <p className="text-gray-500 p-4">No hay pagos para esa fecha.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {historyPayments.map((p) => {
+                      const when = p[DATE_COL]
+                        ? new Date(p[DATE_COL]).toLocaleString('es-MX', { timeZone: CDMX_TZ })
+                        : '—';
+                      const mesa = p?.orders?.tables?.name || 'N/A';
+                      return (
+                        <li
+                          key={p.id}
+                          className="p-3 rounded-lg border hover:bg-gray-50 cursor-pointer flex items-center justify-between"
+                          onClick={async () => {
+                            setHistoryOpen(false);
+                            await openPaymentDetails(p);
+                          }}
+                          title="Ver detalles del pago"
+                        >
+                          <div>
+                            <div className="font-semibold">Orden #{String(p.order_id).slice(0,8)} — Mesa {mesa}</div>
+                            <div className="text-sm text-gray-600">
+                              {methodLabel(p.payment_method)} · ${Number(p.amount || 0).toFixed(2)} · {when}
+                            </div>
+                          </div>
+                          <Receipt className="w-5 h-5 text-gray-400" />
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* === MODAL: DETALLE DE PAGO (desde Historial) === */}
+      <AnimatePresence>
+        {detailOpen && detailData && (
+          <motion.div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-2xl relative"
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            >
+              <button
+                onClick={closeDetails}
+                className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+
+              <div className="mb-4">
+                <h3 className="text-2xl font-bold text-gray-800">
+                  Detalle — Orden #{String(detailData.orderDetail.id).slice(0,8)}
+                </h3>
+                <p className="text-sm text-gray-600">
+                  {new Date(detailData.payment[DATE_COL]).toLocaleString('es-MX', { timeZone: CDMX_TZ })} (CDMX)
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 mb-4 text-sm">
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-gray-500">Mesa</div>
+                  <div className="font-semibold">{detailData.orderDetail?.tables?.name || 'N/A'}</div>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-gray-500">Estado</div>
+                  <div className="font-semibold">{statusLabel(detailData.orderDetail?.status)}</div>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-gray-500">Método</div>
+                  <div className="font-semibold">{methodLabel(detailData.payment?.payment_method)}</div>
+                </div>
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <div className="text-gray-500">Monto</div>
+                  <div className="font-semibold">${Number(detailData.payment?.amount || 0).toFixed(2)}</div>
+                </div>
+              </div>
+
+              <div className="border rounded-xl overflow-hidden">
+                <div className="px-4 py-2 bg-gray-100 font-semibold">Productos</div>
+                <div className="p-4">
+                  {(detailData.orderDetail?.order_items || []).length === 0 ? (
+                    <p className="text-gray-500">No hay productos.</p>
+                  ) : (
+                    <ul className="space-y-1 text-sm">
+                      {detailData.orderDetail.order_items.map((it) => {
+                        const qty = Number(it.quantity || 0);
+                        const price = Number(it.price || 0);
+                        const line = (qty * price).toFixed(2);
+                        return (
+                          <li key={it.id} className="flex justify-between">
+                            <div>
+                              <span className="font-medium">{it?.menu_items?.name || '—'}</span>
+                              {it.notes ? <span className="text-gray-500 italic"> — {it.notes}</span> : null}
+                              <span className="text-gray-600"> (x{qty})</span>
+                            </div>
+                            <div className="font-semibold">${line}</div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+                <div className="px-4 py-2 bg-gray-50 flex justify-between">
+                  <span className="font-semibold">Total</span>
+                  <span className="font-bold">${Number(detailData.orderDetail?.total_amount || 0).toFixed(2)}</span>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 mt-6">
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-100"
+                  onClick={closeDetails}
+                >
+                  Cerrar
+                </button>
+                <button
+                  type="button"
+                  className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+                  onClick={() => printReceiptForPayment(detailData.payment)}
+                >
+                  Imprimir ticket
                 </button>
               </div>
             </motion.div>
