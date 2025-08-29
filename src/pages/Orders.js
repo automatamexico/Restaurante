@@ -18,6 +18,32 @@ import { supabase } from '../supabaseClient';
 import LoadingSpinner from '../components/LoadingSpinner';
 
 /* ===========================
+   Utilidades de estado (ES->ES)
+   =========================== */
+const statusToSpanish = (s) => {
+  switch ((s || '').toLowerCase()) {
+    case 'pending': return 'Pendiente';
+    case 'preparing': return 'Preparando';
+    case 'ready': return 'Lista';
+    case 'served': return 'Servida';
+    case 'paid': return 'Pagada';
+    case 'cancelled': return 'Cancelada';
+    default: return s || '—';
+  }
+};
+const getStatusColor = (status) => {
+  switch ((status || '').toLowerCase()) {
+    case 'pending':    return 'bg-yellow-100 text-yellow-800';
+    case 'preparing':  return 'bg-blue-100 text-blue-800';
+    case 'ready':      return 'bg-green-100 text-green-800';
+    case 'served':     return 'bg-purple-100 text-purple-800';
+    case 'paid':       return 'bg-gray-100 text-gray-800';
+    case 'cancelled':  return 'bg-red-100 text-red-800';
+    default:           return 'bg-gray-100 text-gray-800';
+  }
+};
+
+/* ===========================
    Ticket HTML (58mm, ancho útil 48mm)
    =========================== */
 const printKitchenTicket = (order) => {
@@ -26,8 +52,9 @@ const printKitchenTicket = (order) => {
   const createdAt = new Date(order.created_at);
   const tableName = order.tables?.name || 'N/A';
   const waiter = order.users?.username || 'N/A';
-  const items = order.order_items || [];
+  const estado = statusToSpanish(order.status);
 
+  const items = order.order_items || [];
   const itemsHTML = items.length
     ? items
         .map(
@@ -133,7 +160,7 @@ const printKitchenTicket = (order) => {
 
     <div><span class="label">Mesa:</span> ${tableName}</div>
     <div><span class="label">Mesero:</span> ${waiter}</div>
-    <div><span class="label">Estado:</span> ${order.status}</div>
+    <div><span class="label">Estado:</span> ${estado}</div>
 
     <hr />
 
@@ -230,7 +257,6 @@ const fetchOrderDetailsForPrint = async (orderId) => {
 const SNAP_KEY = (orderId) => `ORD_SNAP_${orderId}`;
 const makeKey = (menu_item_id, notes) => `${String(menu_item_id)}||${(notes || '').trim()}`;
 
-// Snapshot a partir de una orden
 const snapshotFromOrder = (order) => {
   const map = {};
   (order.order_items || []).forEach((it) => {
@@ -240,7 +266,6 @@ const snapshotFromOrder = (order) => {
   return map;
 };
 
-// Snapshot del formulario
 const snapshotFromForm = (formItems) => {
   const map = {};
   (formItems || []).forEach((it) => {
@@ -250,28 +275,15 @@ const snapshotFromForm = (formItems) => {
   return map;
 };
 
-/* ===========================
-   Utils de fecha y estatus
-   =========================== */
-const startEndOfDayISO = (date) => {
-  const d = new Date(date);
-  const start = new Date(d);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { startISO: start.toISOString(), endISO: end.toISOString() };
-};
-
-const statusES = (s) => {
-  switch ((s || '').toLowerCase()) {
-    case 'pending': return 'Pendiente';
-    case 'preparing': return 'Preparando';
-    case 'ready': return 'Lista';
-    case 'served': return 'Servida';
-    case 'paid': return 'Pagada';
-    case 'cancelled': return 'Cancelada';
-    default: return s || '—';
+// Compara snapshots { key: cantidad }
+const snapsEqual = (a, b) => {
+  const A = a || {};
+  const B = b || {};
+  const keys = new Set([...Object.keys(A), ...Object.keys(B)]);
+  for (const k of keys) {
+    if ((A[k] || 0) !== (B[k] || 0)) return false;
   }
+  return true;
 };
 
 /* ===========================
@@ -287,7 +299,7 @@ const Orders = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(null);
 
-  // Nuevas órdenes: "preparing"
+  // NUEVAS órdenes: "preparing"
   const [formData, setFormData] = useState({
     table_id: '',
     user_id: '',
@@ -301,30 +313,25 @@ const Orders = () => {
   const [printPromptOpen, setPrintPromptOpen] = useState(false);
   const [printOrder, setPrintOrder] = useState(null);
 
-  // Modal Historial
+  // Historial
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyDate, setHistoryDate] = useState(() => {
-    const t = new Date();
-    const yyyy = t.getFullYear();
-    const mm = String(t.getMonth() + 1).padStart(2, '0');
-    const dd = String(t.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  });
+  const [historyDate, setHistoryDate] = useState('');
   const [historyOrders, setHistoryOrders] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-
-  // Detalle dentro del historial
-  const [historySelectedId, setHistorySelectedId] = useState(null);
-  const [historyDetails, setHistoryDetails] = useState(null);
-  const [historyDetailsLoading, setHistoryDetailsLoading] = useState(false);
+  const [historyDetailsOpen, setHistoryDetailsOpen] = useState(false);
+  const [historyOrder, setHistoryOrder] = useState(null);
 
   useEffect(() => {
-    fetchDataForToday();
+    fetchData();
   }, []);
 
-  const fetchDataForToday = async () => {
+  // Órdenes SOLO del día en curso
+  const fetchData = async () => {
     setLoading(true);
-    const { startISO, endISO } = startEndOfDayISO(new Date());
+
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
 
     const { data: ordersData } = await supabase
       .from('orders')
@@ -342,8 +349,8 @@ const Orders = () => {
           menu_items ( id, name )
         )
       `)
-      .gte('created_at', startISO)
-      .lt('created_at', endISO)
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString())
       .order('created_at', { ascending: false });
 
     const { data: tablesData } = await supabase
@@ -362,31 +369,15 @@ const Orders = () => {
     setLoading(false);
   };
 
-  const fetchHistoryForDate = async (yyyyMMdd) => {
-    setHistoryLoading(true);
-    setHistorySelectedId(null);
-    setHistoryDetails(null);
-    const { startISO, endISO } = startEndOfDayISO(yyyyMMdd);
-
-    const { data, error: err } = await supabase
-      .from('orders')
-      .select(`
-        id, status, created_at,
-        tables ( name ),
-        users ( username )
-      `)
-      .gte('created_at', startISO)
-      .lt('created_at', endISO)
-      .order('created_at', { ascending: false });
-
-    if (!err) setHistoryOrders(data || []);
-    setHistoryLoading(false);
-  };
-
-  const fetchHistoryDetails = async (orderId) => {
-    setHistoryDetailsLoading(true);
-    setHistorySelectedId(orderId);
-    setHistoryDetails(null);
+  // Historial por fecha
+  const fetchOrdersForDate = async (dateStr) => {
+    if (!dateStr) {
+      setHistoryOrders([]);
+      return;
+    }
+    const start = new Date(dateStr + 'T00:00:00');
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
 
     const { data, error } = await supabase
       .from('orders')
@@ -396,17 +387,25 @@ const Orders = () => {
         users:user_id ( username ),
         order_items (
           id, quantity, price, notes,
-          menu_items:menu_item_id ( name )
+          menu_items:menu_item_id ( id, name )
         ),
         payments:payments ( amount )
       `)
-      .eq('id', orderId)
-      .single();
+      .gte('created_at', start.toISOString())
+      .lt('created_at', end.toISOString())
+      .order('created_at', { ascending: false });
 
-    if (!error) {
-      setHistoryDetails(data);
+    if (error) {
+      setHistoryOrders([]);
+      return;
     }
-    setHistoryDetailsLoading(false);
+    setHistoryOrders(data || []);
+  };
+
+  // Abrir detalles desde historial (ya traemos payments en fetchOrdersForDate)
+  const openHistoryDetails = (ord) => {
+    setHistoryOrder(ord);
+    setHistoryDetailsOpen(true);
   };
 
   const handleInputChange = (e) => {
@@ -488,7 +487,9 @@ const Orders = () => {
     return { data, error };
   };
 
-  // Crear/editar orden
+  /* ===========================
+     Crear/editar orden (con FIX para no recrear ítems si no cambiaron)
+     =========================== */
   const handleAddEditOrder = async (e) => {
     e.preventDefault();
     setError(null);
@@ -511,27 +512,20 @@ const Orders = () => {
         total_amount: totalAmount,
       };
 
-      // Delta de ítems NUEVOS (por plato+nota), usando IDs como string
-      let deltaItems = [];
-      if (currentOrder) {
-        const prevSnap = JSON.parse(localStorage.getItem(SNAP_KEY(currentOrder.id)) || '{}');
-        const newSnap = snapshotFromForm(formData.items);
+      // ¿Cambió la lista de ítems? (solo si es edición)
+      let itemsChanged = false;
+      let prevSnap = {};
+      let newSnap = {};
 
-        Object.keys(newSnap).forEach((k) => {
-          const add = (newSnap[k] || 0) - (prevSnap[k] || 0);
-          if (add > 0) {
-            const [miId, notes] = k.split('||'); // mantener string
-            const mi = menuItems.find((x) => String(x.id) === String(miId));
-            deltaItems.push({
-              menu_item_id: miId,
-              quantity: add,
-              notes: notes || '',
-              menu_items: { name: mi ? mi.name : '(sin nombre)' },
-            });
-          }
-        });
+      if (currentOrder) {
+        try {
+          prevSnap = JSON.parse(localStorage.getItem(SNAP_KEY(currentOrder.id)) || '{}');
+        } catch { prevSnap = {}; }
+        newSnap = snapshotFromForm(formData.items);
+        itemsChanged = !snapsEqual(prevSnap, newSnap);
       }
 
+      // Guardar la orden
       if (currentOrder) {
         const { error: updateOrderError } = await supabase
           .from('orders')
@@ -539,57 +533,97 @@ const Orders = () => {
           .eq('id', currentOrder.id);
         if (updateOrderError) throw updateOrderError;
         newOrderData = currentOrder;
-
-        // Reemplaza ítems
-        const { error: delErr } = await supabase
-          .from('order_items')
-          .delete()
-          .eq('order_id', newOrderData.id);
-        if (delErr) throw delErr;
       } else {
         const { data, error: insertOrderError } = await insertOrderWithFallback(orderToSave);
         if (insertOrderError) throw insertOrderError;
         newOrderData = data;
       }
 
-      // Insertar ítems actuales del formulario
-      const itemsToInsert = formData.items.map((it) => {
-        const mi = menuItems.find((x) => String(x.id) === String(it.menu_item_id));
-        return {
-          order_id: newOrderData.id,
-          menu_item_id: it.menu_item_id,
-          quantity: Number(it.quantity),
-          price: mi ? Number(mi.price) : 0,
-          notes: it.notes || null,
-        };
-      });
-
-      if (itemsToInsert.length) {
-        const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
-        if (insItemsErr) throw insItemsErr;
-      }
-
-      // Preguntar impresión
       if (!currentOrder) {
-        // Nueva orden: imprimir TODO
+        // NUEVA: insertar todos los ítems del formulario
+        const itemsToInsert = formData.items.map((it) => {
+          const mi = menuItems.find((x) => String(x.id) === String(it.menu_item_id));
+          return {
+            order_id: newOrderData.id,
+            menu_item_id: it.menu_item_id,
+            quantity: Number(it.quantity),
+            price: mi ? Number(mi.price) : 0,
+            notes: it.notes || null,
+          };
+        });
+
+        if (itemsToInsert.length) {
+          const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
+          if (insItemsErr) throw insItemsErr;
+        }
+
+        // Preguntar impresión — ticket completo
         const fullOrder = await fetchOrderDetailsForPrint(newOrderData.id);
         setPrintOrder(fullOrder);
         setPrintPromptOpen(true);
-      } else if (deltaItems.length > 0) {
-        // Edición: imprimir SOLO lo nuevo
-        const header = await fetchOrderDetailsForPrint(newOrderData.id);
-        const partial = {
-          ...header,
-          order_items: deltaItems, // sólo nuevos
-        };
-        setPrintOrder(partial);
-        setPrintPromptOpen(true);
+
+      } else {
+        // EDICIÓN
+        if (itemsChanged) {
+          // (1) Borra ítems actuales
+          const { error: delErr } = await supabase
+            .from('order_items')
+            .delete()
+            .eq('order_id', newOrderData.id);
+          if (delErr) throw delErr;
+
+          // (2) Inserta los del formulario
+          const itemsToInsert = formData.items.map((it) => {
+            const mi = menuItems.find((x) => String(x.id) === String(it.menu_item_id));
+            return {
+              order_id: newOrderData.id,
+              menu_item_id: it.menu_item_id,
+              quantity: Number(it.quantity),
+              price: mi ? Number(mi.price) : 0,
+              notes: it.notes || null,
+            };
+          });
+
+          if (itemsToInsert.length) {
+            const { error: insItemsErr } = await supabase.from('order_items').insert(itemsToInsert);
+            if (insItemsErr) throw insItemsErr;
+          }
+
+          // (3) Calcula DELTA y ofrece imprimir solo lo nuevo
+          const deltaItems = [];
+          Object.keys(newSnap).forEach((k) => {
+            const add = (newSnap[k] || 0) - (prevSnap[k] || 0);
+            if (add > 0) {
+              const [miId, notes] = k.split('||');
+              const mi = menuItems.find((x) => String(x.id) === String(miId));
+              deltaItems.push({
+                menu_item_id: miId,
+                quantity: add,
+                notes: notes || '',
+                menu_items: { name: mi ? mi.name : '(sin nombre)' },
+              });
+            }
+          });
+
+          if (deltaItems.length > 0) {
+            const header = await fetchOrderDetailsForPrint(newOrderData.id);
+            const partial = { ...header, order_items: deltaItems };
+            setPrintOrder(partial);
+            setPrintPromptOpen(true);
+          }
+
+        } else {
+          // ⚠️ Solo cambió estado/mesa/usuario: NO tocar order_items
+          // (Evita recrear entradas de cocina en estado 'pending')
+        }
       }
 
-      await fetchDataForToday();
+      await fetchData();
       setIsModalOpen(false);
       setCurrentOrder(null);
       setFormData({ table_id: '', user_id: '', status: 'preparing', items: [] });
+
+      try { localStorage.removeItem(SNAP_KEY(newOrderData.id)); } catch {}
     } catch (err) {
       console.error('[Orders] Error al guardar:', err);
       setError('No pude guardar la orden: ' + (err?.message || err));
@@ -604,7 +638,7 @@ const Orders = () => {
     try {
       const { error } = await supabase.from('orders').delete().eq('id', id);
       if (error) throw error;
-      await fetchDataForToday();
+      await fetchData();
     } catch (err) {
       setError('No pude borrar la orden: ' + (err?.message || err));
     } finally {
@@ -621,8 +655,12 @@ const Orders = () => {
   const openEditModal = (order) => {
     setCurrentOrder(order);
 
-    // Snapshot previo por (menu_item_id + notes) en STRING
-    const prevMap = snapshotFromOrder(order);
+    // Snapshot previo (menu_item_id + notes) en STRING
+    const prevMap = {};
+    (order.order_items || []).forEach((it) => {
+      const k = makeKey(it.menu_item_id ?? it.menu_items?.id, it.notes || '');
+      prevMap[k] = (prevMap[k] || 0) + Number(it.quantity || 0);
+    });
     localStorage.setItem(SNAP_KEY(order.id), JSON.stringify(prevMap));
 
     setFormData({
@@ -631,7 +669,7 @@ const Orders = () => {
       status: order.status,
       items: (order.order_items || []).map((item) => ({
         id: item.id,
-        menu_item_id: item.menu_item_id ?? null, // UUID/string
+        menu_item_id: item.menu_item_id ?? null,
         quantity: item.quantity,
         notes: item.notes || '',
       })),
@@ -649,22 +687,10 @@ const Orders = () => {
   const filteredOrders = orders.filter((order) => {
     const mesa = (order.tables?.name || '').toLowerCase();
     const mesero = (order.users?.username || '').toLowerCase();
-    const est = (order.status || '').toLowerCase();
+    const est = statusToSpanish(order.status).toLowerCase(); // búsqueda por estado en ES
     const q = searchTerm.toLowerCase();
     return mesa.includes(q) || mesero.includes(q) || est.includes(q);
   });
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'pending':    return 'bg-yellow-100 text-yellow-800';
-      case 'preparing':  return 'bg-blue-100 text-blue-800';
-      case 'ready':      return 'bg-green-100 text-green-800';
-      case 'served':     return 'bg-purple-100 text-purple-800';
-      case 'paid':       return 'bg-gray-100 text-gray-800';
-      case 'cancelled':  return 'bg-red-100 text-red-800';
-      default:           return 'bg-gray-100 text-gray-800';
-    }
-  };
 
   if (loading) return <LoadingSpinner />;
 
@@ -676,7 +702,7 @@ const Orders = () => {
         transition={{ duration: 0.5 }}
         className="text-4xl font-extrabold text-gray-900 mb-6 text-center bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-700"
       >
-        Gestión de Órdenes (hoy)
+        Gestión de Órdenes
       </motion.h2>
 
       {error && (
@@ -706,26 +732,23 @@ const Orders = () => {
 
         <div className="flex gap-3 w-full md:w-auto">
           <motion.button
+            onClick={() => { setHistoryOpen(true); }}
+            className="bg-white border border-indigo-200 text-indigo-700 px-6 py-3 rounded-xl shadow-sm hover:bg-indigo-50 flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <Calendar className="w-5 h-5" />
+            <span>Historial de Órdenes</span>
+          </motion.button>
+
+          <motion.button
             onClick={openAddModal}
-            className="flex-1 md:flex-none bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center justify-center gap-2 transition-all duration-200"
+            className="bg-gradient-to-r from-green-500 to-teal-600 text-white px-6 py-3 rounded-xl shadow-lg hover:shadow-xl flex items-center space-x-2 transition-all duration-200 w-full md:w-auto justify-center"
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
           >
             <PlusCircle className="w-5 h-5" />
             <span>Crear Nueva Orden</span>
-          </motion.button>
-
-          <motion.button
-            onClick={() => {
-              setHistoryOpen(true);
-              fetchHistoryForDate(historyDate);
-            }}
-            className="flex-1 md:flex-none bg-white border border-gray-300 text-gray-700 px-6 py-3 rounded-xl shadow-sm hover:bg-gray-50 flex items-center justify-center gap-2 transition-all duration-200"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-          >
-            <Calendar className="w-5 h-5" />
-            <span>Historial de órdenes</span>
           </motion.button>
         </div>
       </div>
@@ -758,7 +781,7 @@ const Orders = () => {
                       Orden #{String(order.id).substring(0, 8)}
                     </h3>
                     <span className={`px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(order.status)}`}>
-                      {statusES(order.status)}
+                      {statusToSpanish(order.status)}
                     </span>
                   </div>
                   <p className="text-gray-600 mb-2 flex items-center">
@@ -1035,7 +1058,7 @@ const Orders = () => {
         )}
       </AnimatePresence>
 
-      {/* ===== Modal: Historial de Órdenes (con detalles al hacer clic) ===== */}
+      {/* ===== Modal: Historial de Órdenes ===== */}
       <AnimatePresence>
         {historyOpen && (
           <motion.div
@@ -1045,7 +1068,7 @@ const Orders = () => {
             exit={{ opacity: 0 }}
           >
             <motion.div
-              className="bg-white p-6 rounded-3xl shadow-2xl w-full max-w-4xl relative"
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-3xl relative"
               initial={{ opacity: 0, y: 40 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 40 }}
@@ -1060,117 +1083,136 @@ const Orders = () => {
 
               <div className="flex items-center gap-3 mb-4">
                 <Calendar className="w-7 h-7 text-indigo-600" />
-                <h3 className="text-2xl font-bold text-gray-800">Historial de órdenes</h3>
+                <h3 className="text-2xl font-bold text-gray-800">Historial de Órdenes</h3>
               </div>
 
-              <p className="text-gray-600 mb-4">Selecciona el día que deseas consultar.</p>
-
-              <div className="flex items-center gap-3 mb-6">
+              <div className="mb-4">
+                <label className="block text-sm text-gray-700 mb-1">
+                  Selecciona el día que deseas consultar
+                </label>
                 <input
                   type="date"
                   className="p-2 border rounded-lg"
                   value={historyDate}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setHistoryDate(v);
-                    fetchHistoryForDate(v);
+                  onChange={async (e) => {
+                    const val = e.target.value;
+                    setHistoryDate(val);
+                    await fetchOrdersForDate(val);
                   }}
                 />
-                <button
-                  className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
-                  onClick={() => fetchHistoryForDate(historyDate)}
-                >
-                  Consultar
-                </button>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-6">
-                {/* Lista de órdenes (izquierda) */}
-                <div className="max-h-[60vh] overflow-auto">
-                  {historyLoading ? (
-                    <div className="py-10"><LoadingSpinner /></div>
-                  ) : historyOrders.length === 0 ? (
-                    <p className="text-gray-500">No hay órdenes para ese día.</p>
-                  ) : (
-                    <ul className="divide-y divide-gray-200">
-                      {historyOrders.map((o) => {
-                        const isSelected = historySelectedId === o.id;
-                        return (
-                          <li
-                            key={o.id}
-                            className={`py-3 px-2 flex items-center justify-between cursor-pointer hover:bg-gray-50 rounded-lg ${isSelected ? 'bg-indigo-50' : ''}`}
-                            onClick={() => fetchHistoryDetails(o.id)}
-                            title="Ver detalles"
-                          >
-                            <div className="text-gray-700">
-                              <span className="font-semibold">Orden #{String(o.id).slice(0,8)}</span>
-                              {' — '}Mesa {o?.tables?.name || 'N/A'}
+              <div className="max-h-[60vh] overflow-auto border rounded-xl">
+                {historyOrders.length === 0 ? (
+                  <p className="p-4 text-gray-500">Selecciona una fecha para ver órdenes.</p>
+                ) : (
+                  <ul className="divide-y">
+                    {historyOrders.map((o) => {
+                      const total = (o.order_items || []).reduce(
+                        (t, it) => t + Number(it.price || 0) * Number(it.quantity || 0),
+                        0
+                      );
+                      const paid = (o.payments || []).reduce(
+                        (t, p) => t + Number(p.amount || 0),
+                        0
+                      );
+                      return (
+                        <li
+                          key={o.id}
+                          className="p-3 hover:bg-gray-50 cursor-pointer"
+                          onClick={() => openHistoryDetails(o)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="font-semibold text-gray-800">
+                              Orden #{String(o.id).slice(0, 8)} — Mesa {o?.tables?.name || 'N/A'}
                               <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${getStatusColor(o.status)}`}>
-                                {statusES(o.status)}
+                                {statusToSpanish(o.status)}
                               </span>
                             </div>
                             <div className="text-sm text-gray-500">
                               {new Date(o.created_at).toLocaleString('es-MX')}
                             </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-
-                {/* Detalle de la orden seleccionada (derecha) */}
-                <div className="max-h-[60vh] overflow-auto border border-gray-200 rounded-xl p-4">
-                  {!historySelectedId ? (
-                    <p className="text-gray-500">Selecciona una orden para ver sus detalles.</p>
-                  ) : historyDetailsLoading ? (
-                    <div className="py-10"><LoadingSpinner /></div>
-                  ) : !historyDetails ? (
-                    <p className="text-gray-500">No se pudo cargar el detalle.</p>
-                  ) : (
-                    <div>
-                      <h4 className="text-xl font-bold text-gray-800 mb-2">
-                        Orden #{String(historyDetails.id).slice(0,8)}{' '}
-                        <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${getStatusColor(historyDetails.status)}`}>
-                          {statusES(historyDetails.status)}
-                        </span>
-                      </h4>
-                      <p className="text-gray-700 mb-1"><strong>Mesa:</strong> {historyDetails?.tables?.name || 'N/A'}</p>
-                      <p className="text-gray-700 mb-3"><strong>Mesero:</strong> {historyDetails?.users?.username || 'N/A'}</p>
-
-                      <h5 className="font-semibold text-gray-800 mt-3 mb-2">Productos</h5>
-                      {(historyDetails.order_items || []).length === 0 ? (
-                        <p className="text-gray-500">Sin productos.</p>
-                      ) : (
-                        <ul className="list-disc list-inside text-gray-700 text-sm space-y-1">
-                          {historyDetails.order_items.map((it) => {
-                            const name = it?.menu_items?.name || '—';
-                            const qty = Number(it.quantity || 0);
-                            const price = Number(it.price || 0);
-                            return (
-                              <li key={it.id}>
-                                {name} (x{qty}) — ${ (qty * price).toFixed(2) }
-                                {it.notes ? <span className="text-gray-500 italic"> — {it.notes}</span> : null}
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
-
-                      <hr className="my-3" />
-
-                      <p className="text-gray-800 text-base font-semibold">
-                        Total pagado:{' '}
-                        ${((historyDetails.payments || []).reduce((s, p) => s + Number(p.amount || 0), 0)).toFixed(2)}
-                      </p>
-
-                      <p className="text-gray-500 text-sm mt-1">
-                        Creada: {new Date(historyDetails.created_at).toLocaleString('es-MX')}
-                      </p>
-                    </div>
-                  )}
-                </div>
+                          </div>
+                          <div className="text-sm text-gray-600">
+                            Total: ${total.toFixed(2)} · Pagado: ${paid.toFixed(2)}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ===== Modal: Detalle de orden (desde historial) ===== */}
+      <AnimatePresence>
+        {historyDetailsOpen && historyOrder && (
+          <motion.div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-xl relative"
+              initial={{ opacity: 0, y: 40 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 40 }}
+              transition={{ type: 'spring', damping: 20, stiffness: 300 }}
+            >
+              <button
+                onClick={() => setHistoryDetailsOpen(false)}
+                className="absolute top-4 right-4 text-gray-400 hover:text-gray-600"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+
+              <h3 className="text-2xl font-bold text-gray-800 mb-4">
+                Orden #{String(historyOrder.id).slice(0, 8)}
+              </h3>
+
+              <div className="space-y-2 text-gray-700 mb-4">
+                <div><strong>Mesa:</strong> {historyOrder?.tables?.name || 'N/A'}</div>
+                <div><strong>Mesero:</strong> {historyOrder?.users?.username || 'N/A'}</div>
+                <div>
+                  <strong>Estatus:</strong>{' '}
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${getStatusColor(historyOrder.status)}`}>
+                    {statusToSpanish(historyOrder.status)}
+                  </span>
+                </div>
+                <div><strong>Fecha:</strong> {new Date(historyOrder.created_at).toLocaleString('es-MX')}</div>
+              </div>
+
+              <div className="border rounded-lg p-3 max-h-64 overflow-auto mb-4">
+                <ul className="list-disc list-inside text-gray-800">
+                  {(historyOrder.order_items || []).map((it) => (
+                    <li key={it.id}>
+                      {it.menu_items?.name} (x{it.quantity}) — ${Number(it.price || 0).toFixed(2)}
+                      {it.notes ? <span className="text-gray-500 italic"> ({it.notes})</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {(() => {
+                const total = (historyOrder.order_items || []).reduce(
+                  (t, it) => t + Number(it.price || 0) * Number(it.quantity || 0),
+                  0
+                );
+                const paid = (historyOrder.payments || []).reduce(
+                  (t, p) => t + Number(p.amount || 0),
+                  0
+                );
+                return (
+                  <div className="text-right text-gray-800">
+                    <div><strong>Total:</strong> ${total.toFixed(2)}</div>
+                    <div><strong>Total pagado:</strong> ${paid.toFixed(2)}</div>
+                  </div>
+                );
+              })()}
             </motion.div>
           </motion.div>
         )}
@@ -1180,6 +1222,7 @@ const Orders = () => {
 };
 
 export default Orders;
+
 
 
 
